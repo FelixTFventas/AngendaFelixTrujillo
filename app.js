@@ -603,6 +603,14 @@ document.querySelector('#createUserForm').addEventListener('submit', createUser)
 document.querySelector('#newUserRole').addEventListener('change', updateCreateUserFields);
 document.querySelector('#generatePassword').addEventListener('click', generatePassword);
 
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/service-worker.js').catch(error => {
+      console.warn('No fue posible activar el modo instalable.', error);
+    });
+  });
+}
+
 (async function initialize() {
   updateCreateUserFields();
   const { data: { session }, error } = await supabaseClient.auth.getSession();
