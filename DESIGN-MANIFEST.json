@@ -1,14 +1,14 @@
 {
   "schema": "open-design.design-manifest.v1",
   "title": "c26f5ad0-05d7-448f-b4b5-cc608fda5dd3",
-  "entryFile": "agenda-inmobiliaria.html",
+  "entryFile": "index.html",
   "sourceFiles": {
     "all": [
-      "agenda-inmobiliaria.html",
+      "index.html",
       "brand-spec.md"
     ],
     "html": [
-      "agenda-inmobiliaria.html"
+      "index.html"
     ],
     "css": [],
     "scriptsAndComponents": [],
@@ -18,7 +18,7 @@
   },
   "screens": [
     {
-      "file": "agenda-inmobiliaria.html",
+      "file": "index.html",
       "role": "screen",
       "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
     }
@@ -54,7 +54,7 @@
   },
   "tokens": {
     "source": [
-      "agenda-inmobiliaria.html"
+      "index.html"
     ],
     "required": [
       "background",
@@ -73,7 +73,7 @@
   },
   "interactions": {
     "source": [
-      "agenda-inmobiliaria.html"
+      "index.html"
     ],
     "requiredStates": [
       "default",
