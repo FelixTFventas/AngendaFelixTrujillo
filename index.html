@@ -191,6 +191,14 @@
     .field.full { grid-column: 1 / -1; }
     .field label { font-size: 12px; font-weight: 600; letter-spacing: .02em; }
     input, textarea { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--fg); }
+    .password-control { position: relative; }
+    .password-control input { padding-right: 50px; }
+    .password-toggle { position: absolute; top: 0; right: 0; width: 44px; height: 44px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 0 9px 9px 0; background: transparent; color: var(--muted); cursor: pointer; }
+    .password-toggle:hover { color: var(--fg); background: var(--bg); }
+    .password-toggle svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+    .password-toggle .eye-off, .password-toggle[aria-pressed="true"] .eye-on { display: none; }
+    .password-toggle[aria-pressed="true"] .eye-off { display: block; }
+    .caps-lock-hint { color: var(--warn-fg); font-size: 11px; font-weight: 600; }
     textarea { min-height: 78px; resize: vertical; }
     .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
     .detail-body { padding: 22px 24px 24px; }
@@ -300,7 +308,7 @@
         <h2>Ingresar</h2><p>Usa el correo y la contraseña asignados.</p>
         <form id="loginForm">
           <div class="field"><label for="loginEmail">Correo</label><input id="loginEmail" name="email" type="email" autocomplete="username" required></div>
-          <div class="field"><label for="loginPassword">Contraseña</label><input id="loginPassword" name="password" type="password" autocomplete="current-password" required></div>
+          <div class="field"><label for="loginPassword">Contraseña</label><div class="password-control"><input id="loginPassword" name="password" type="password" autocomplete="current-password" aria-describedby="loginCapsLock" data-password-input data-caps-lock-hint="loginCapsLock" required><button class="password-toggle" type="button" data-password-toggle="loginPassword" aria-controls="loginPassword" aria-pressed="false" aria-label="Mostrar contraseña" title="Mostrar contraseña"><svg class="eye-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.5"/></svg><svg class="eye-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.5"/><path d="m4 4 16 16"/></svg></button></div><span class="caps-lock-hint" id="loginCapsLock" role="status" aria-live="polite" hidden>Bloq Mayús está activado</span></div>
           <button class="primary auth-submit" type="submit">Entrar a la agenda</button>
           <p class="form-message" id="loginMessage" role="alert"></p>
         </form>
@@ -419,8 +427,8 @@
   <dialog class="password-dialog" id="passwordDialog" aria-labelledby="passwordTitle">
     <div class="dialog-head"><div><h2 id="passwordTitle">Crea una contraseña nueva</h2><p>La contraseña temporal solo sirve para el primer ingreso.</p></div></div>
     <form id="passwordForm">
-      <div class="field"><label for="newPassword">Nueva contraseña</label><input id="newPassword" name="password" type="password" minlength="10" autocomplete="new-password" required></div>
-      <div class="field" style="margin-top:14px"><label for="confirmPassword">Confirmar contraseña</label><input id="confirmPassword" name="confirm_password" type="password" minlength="10" autocomplete="new-password" required></div>
+      <div class="field"><label for="newPassword">Nueva contraseña</label><div class="password-control"><input id="newPassword" name="password" type="password" minlength="10" autocomplete="new-password" aria-describedby="newPasswordCapsLock" data-password-input data-caps-lock-hint="newPasswordCapsLock" required><button class="password-toggle" type="button" data-password-toggle="newPassword" aria-controls="newPassword" aria-pressed="false" aria-label="Mostrar contraseña" title="Mostrar contraseña"><svg class="eye-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.5"/></svg><svg class="eye-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.5"/><path d="m4 4 16 16"/></svg></button></div><span class="caps-lock-hint" id="newPasswordCapsLock" role="status" aria-live="polite" hidden>Bloq Mayús está activado</span></div>
+      <div class="field" style="margin-top:14px"><label for="confirmPassword">Confirmar contraseña</label><div class="password-control"><input id="confirmPassword" name="confirm_password" type="password" minlength="10" autocomplete="new-password" aria-describedby="confirmPasswordCapsLock" data-password-input data-caps-lock-hint="confirmPasswordCapsLock" required><button class="password-toggle" type="button" data-password-toggle="confirmPassword" aria-controls="confirmPassword" aria-pressed="false" aria-label="Mostrar contraseña" title="Mostrar contraseña"><svg class="eye-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.5"/></svg><svg class="eye-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.5"/><path d="m4 4 16 16"/></svg></button></div><span class="caps-lock-hint" id="confirmPasswordCapsLock" role="status" aria-live="polite" hidden>Bloq Mayús está activado</span></div>
       <button class="primary" type="submit" style="width:100%;margin-top:20px">Guardar contraseña</button>
       <p class="form-message" id="passwordMessage" role="alert"></p>
     </form>

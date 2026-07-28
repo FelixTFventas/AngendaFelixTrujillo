@@ -112,11 +112,15 @@ async function startSession(user) {
   const { data: profile, error } = await supabaseClient.from('profiles').select('*').eq('id', user.id).single();
   if (error || !profile) {
     await supabaseClient.auth.signOut();
+    loginForm.elements.password.value = '';
+    resetPasswordFields(loginForm);
     showAuth(readableError(error, 'El perfil todavía no está configurado. Ejecuta la configuración de Supabase.'));
     return;
   }
   if (!profile.active) {
     await supabaseClient.auth.signOut();
+    loginForm.elements.password.value = '';
+    resetPasswordFields(loginForm);
     showAuth('Este usuario está desactivado. Comunícate con el administrador.');
     return;
   }
@@ -508,6 +512,43 @@ function generatePassword() {
   document.querySelector('#temporaryPassword').value = `Ftf-${[...values].map(value => alphabet[value % alphabet.length]).join('')}!7`;
 }
 
+function setPasswordVisibility(input, visible) {
+  const toggle = document.querySelector(`[data-password-toggle="${input.id}"]`);
+  input.type = visible ? 'text' : 'password';
+  if (!toggle) return;
+  const label = visible ? 'Ocultar contraseña' : 'Mostrar contraseña';
+  toggle.setAttribute('aria-pressed', String(visible));
+  toggle.setAttribute('aria-label', label);
+  toggle.title = label;
+}
+
+function resetPasswordFields(form) {
+  form.querySelectorAll('[data-password-input]').forEach(input => {
+    setPasswordVisibility(input, false);
+    const hint = document.querySelector(`#${input.dataset.capsLockHint}`);
+    if (hint) hint.hidden = true;
+  });
+}
+
+document.querySelectorAll('[data-password-toggle]').forEach(toggle => {
+  toggle.addEventListener('pointerdown', event => event.preventDefault());
+  toggle.addEventListener('click', () => {
+    const input = document.querySelector(`#${toggle.dataset.passwordToggle}`);
+    if (!input) return;
+    setPasswordVisibility(input, input.type === 'password');
+  });
+});
+
+document.querySelectorAll('[data-caps-lock-hint]').forEach(input => {
+  const hint = document.querySelector(`#${input.dataset.capsLockHint}`);
+  const updateCapsLock = event => {
+    if (hint && typeof event.getModifierState === 'function') hint.hidden = !event.getModifierState('CapsLock');
+  };
+  input.addEventListener('keydown', updateCapsLock);
+  input.addEventListener('keyup', updateCapsLock);
+  input.addEventListener('blur', () => { if (hint) hint.hidden = true; });
+});
+
 async function changePassword(event) {
   event.preventDefault();
   const password = event.currentTarget.elements.password.value;
@@ -530,6 +571,7 @@ async function changePassword(event) {
   currentProfile.must_change_password = false;
   passwordDialog.close();
   event.currentTarget.reset();
+  resetPasswordFields(event.currentTarget);
   await activateWorkspace();
   showToast('Contraseña actualizada correctamente.');
 }
@@ -555,6 +597,7 @@ document.querySelector('#logoutButton').addEventListener('click', async () => {
   await supabaseClient.auth.signOut();
   showAuth();
   loginForm.reset();
+  resetPasswordFields(loginForm);
 });
 document.querySelector('#newAppointment').addEventListener('click', () => openAppointmentDialog());
 appointmentDialog.querySelector('.close').addEventListener('click', () => appointmentDialog.close());
