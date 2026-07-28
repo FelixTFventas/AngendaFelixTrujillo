@@ -50,10 +50,15 @@ Inicia sesión como Yunior y abre **Usuarios**. Crea cada cuenta con una contras
 | Patricia Trujillo | `comercial@felixtrujillofalla.com` | Asesor | Ventas | Violeta |
 | Eliana Gómez | `administracion@felixtrujillofalla.com` | Supervisor | Sin equipo | Sin color |
 
+## 5. Activar gestoras de Ventas
+
+Después de crear a Paola y Patricia, ejecuta una sola vez todo el contenido de `supabase/enable-sales-team-appointment-managers.sql` en **SQL Editor**. El script valida sus perfiles antes de activar la capacidad y cancela toda la operación si no son asesoras de Ventas.
+
 ## Permisos aplicados
 
 - Todos los usuarios activos pueden consultar todas las citas.
 - Los asesores crean citas únicamente a su nombre y no pueden modificarlas.
-- La supervisora crea citas para cualquier asesor, y puede editar, reprogramar o cancelar.
+- Paola Crespo y Patricia Trujillo gestionan todas las citas de Ventas y consultan Arrendamientos en modo lectura.
+- La supervisora crea, edita, reasigna y elimina citas de cualquier equipo.
 - El administrador gestiona usuarios y tiene control completo sobre las citas.
 - Nadie puede consultar la agenda hasta cambiar su contraseña temporal.

@@ -50,9 +50,14 @@ function escapeHTML(value) {
   return String(value ?? '').replace(/[&<>'"]/g, character => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[character]);
 }
 function initials(name) { return String(name || '').split(/\s+/).filter(Boolean).map(part => part[0]).join('').slice(0, 2).toUpperCase(); }
-function canManageAppointments() { return ['admin', 'supervisor'].includes(currentProfile?.role); }
-function canDeleteAppointments() { return currentProfile?.role === 'admin'; }
-function canAssignAppointments() { return ['admin', 'supervisor'].includes(currentProfile?.role); }
+function isGlobalAppointmentManager() { return ['admin', 'supervisor'].includes(currentProfile?.role); }
+function canManageOwnTeamAppointments() { return currentProfile?.can_manage_team_appointments === true && Boolean(currentProfile.team); }
+function canAssignAppointments() { return isGlobalAppointmentManager() || canManageOwnTeamAppointments(); }
+function canManageAppointment(appointment) {
+  return isGlobalAppointmentManager()
+    || (canManageOwnTeamAppointments() && appointment?.team === currentProfile.team);
+}
+function canDeleteAppointment(appointment) { return canManageAppointment(appointment); }
 function advisorColor(advisorName, savedColor = '') {
   return savedColor || advisors.find(advisor => advisor.name === advisorName)?.color || 'neutral';
 }
@@ -202,8 +207,12 @@ function filteredAppointments() {
 
 function setAdvisorOptions(select, team, selectedValue = '', allowAll = false) {
   let available = advisors.filter(advisor => team === 'all' || advisor.team === team);
-  if (!allowAll && !canAssignAppointments() && currentProfile) {
-    available = available.filter(advisor => advisor.id === currentProfile.id);
+  if (!allowAll && currentProfile) {
+    if (canManageOwnTeamAppointments() && !isGlobalAppointmentManager()) {
+      available = available.filter(advisor => advisor.team === currentProfile.team);
+    } else if (!canAssignAppointments()) {
+      available = available.filter(advisor => advisor.id === currentProfile.id);
+    }
   }
   const firstOption = allowAll
     ? '<option value="all">Todos</option>'
@@ -276,7 +285,7 @@ function render() {
 }
 
 function openAppointmentDialog(appointment = null) {
-  if (appointment && !canManageAppointments()) return;
+  if (appointment && !canManageAppointment(appointment)) return;
   appointmentForm.reset();
   appointmentForm.elements.id.value = appointment?.id || '';
   document.querySelector('#formDialogTitle').textContent = appointment ? 'Editar cita' : 'Nueva cita';
@@ -293,6 +302,12 @@ function openAppointmentDialog(appointment = null) {
     appointmentForm.elements.date.value = dateKey(selectedDate);
     appointmentForm.elements.time.value = '10:00';
     appointmentForm.elements.status.value = 'pending';
+  } else if (canManageOwnTeamAppointments() && !isGlobalAppointmentManager()) {
+    formTeam.value = currentProfile.team;
+    setAdvisorOptions(formAdvisor, currentProfile.team);
+    appointmentForm.elements.date.value = dateKey(selectedDate);
+    appointmentForm.elements.time.value = '10:00';
+    appointmentForm.elements.status.value = 'pending';
   } else {
     const initialTeam = teamFilter.value === 'all' ? '' : teamFilter.value;
     formTeam.value = initialTeam;
@@ -302,8 +317,8 @@ function openAppointmentDialog(appointment = null) {
     appointmentForm.elements.status.value = 'pending';
   }
 
-  formTeam.disabled = !canAssignAppointments();
-  appointmentForm.elements.status.disabled = !canManageAppointments();
+  formTeam.disabled = !isGlobalAppointmentManager();
+  appointmentForm.elements.status.disabled = !canAssignAppointments();
   appointmentDialog.showModal();
   appointmentForm.elements.subject.focus();
 }
@@ -329,8 +344,8 @@ function openDetails(id) {
   const whatsapp = document.querySelector('#whatsappAppointment');
   whatsapp.hidden = !phone;
   if (phone) whatsapp.href = `https://wa.me/${phone}?text=${encodeURIComponent(`Hola ${appointment.client}, te contacto para confirmar la cita de ${appointment.subject} el ${formattedDate} a las ${appointment.time}.`)}`;
-  document.querySelector('#editAppointment').hidden = !canManageAppointments();
-  document.querySelector('#deleteAppointment').hidden = !canDeleteAppointments();
+  document.querySelector('#editAppointment').hidden = !canManageAppointment(appointment);
+  document.querySelector('#deleteAppointment').hidden = !canDeleteAppointment(appointment);
   detailDialog.showModal();
 }
 
@@ -350,6 +365,25 @@ async function saveAppointment(event) {
   };
   if (!payload.advisor_id) {
     showToast('Selecciona un asesor responsable.');
+    return;
+  }
+  const selectedAdvisor = advisors.find(advisor => advisor.id === payload.advisor_id);
+  if (!selectedAdvisor) {
+    showToast('El asesor seleccionado no está disponible.');
+    return;
+  }
+  if (existingId) {
+    const existing = appointments.find(appointment => appointment.id === existingId);
+    if (!existing || !canManageAppointment(existing)) {
+      showToast('No tienes permiso para editar esta cita.');
+      return;
+    }
+  } else if (!canAssignAppointments() && payload.advisor_id !== currentProfile.id) {
+    showToast('Solo puedes crear citas asignadas a tu usuario.');
+    return;
+  }
+  if (canManageOwnTeamAppointments() && !isGlobalAppointmentManager() && selectedAdvisor.team !== currentProfile.team) {
+    showToast(`Solo puedes gestionar citas de ${teams[currentProfile.team]}.`);
     return;
   }
 
@@ -375,7 +409,7 @@ async function saveAppointment(event) {
 
 async function deleteAppointment() {
   const appointment = appointments.find(item => item.id === activeAppointmentId);
-  if (!appointment || !canDeleteAppointments() || !window.confirm(`¿Eliminar la cita "${appointment.subject}"? Esta acción no se puede deshacer.`)) return;
+  if (!appointment || !canDeleteAppointment(appointment) || !window.confirm(`¿Eliminar la cita "${appointment.subject}"? Esta acción no se puede deshacer.`)) return;
   const { error } = await supabaseClient.from('appointments').delete().eq('id', appointment.id);
   if (error) {
     showToast(readableError(error));

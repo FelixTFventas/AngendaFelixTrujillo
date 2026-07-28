@@ -24,6 +24,7 @@ create table if not exists public.profiles (
   color text check (color is null or color in ('amber', 'teal', 'blue', 'violet', 'coral')),
   active boolean not null default true,
   must_change_password boolean not null default true,
+  can_manage_team_appointments boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint advisor_fields check (
@@ -31,6 +32,26 @@ create table if not exists public.profiles (
     or role <> 'supervisor'
   )
 );
+
+alter table public.profiles
+  add column if not exists can_manage_team_appointments boolean not null default false;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'team_appointment_manager_fields'
+      and conrelid = 'public.profiles'::regclass
+  ) then
+    alter table public.profiles
+      add constraint team_appointment_manager_fields check (
+        not can_manage_team_appointments
+        or (role = 'advisor' and team is not null)
+      );
+  end if;
+end
+$$;
 
 create table if not exists public.appointments (
   id uuid primary key default gen_random_uuid(),
@@ -78,6 +99,27 @@ as $$
     where id = auth.uid() and active = true and must_change_password = false
   );
 $$;
+
+create or replace function public.can_manage_appointment_team(target_team public.team_type)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists(
+    select 1 from public.profiles
+    where id = auth.uid()
+      and active = true
+      and must_change_password = false
+      and role = 'advisor'
+      and can_manage_team_appointments = true
+      and team = target_team
+  );
+$$;
+
+revoke all on function public.can_manage_appointment_team(public.team_type) from public;
+grant execute on function public.can_manage_appointment_team(public.team_type) to authenticated;
 
 drop function if exists public.list_advisors();
 create function public.list_advisors()
@@ -195,19 +237,29 @@ with check (
   and (
     public.current_profile_role() in ('admin', 'supervisor')
     or (public.current_profile_role() = 'advisor' and advisor_id = auth.uid())
+    or public.can_manage_appointment_team(advisor_team)
   )
 );
 
 drop policy if exists appointments_supervise on public.appointments;
 create policy appointments_supervise on public.appointments
 for update to authenticated
-using (public.current_profile_role() in ('admin', 'supervisor'))
-with check (public.current_profile_role() in ('admin', 'supervisor'));
+using (
+  public.current_profile_role() in ('admin', 'supervisor')
+  or public.can_manage_appointment_team(advisor_team)
+)
+with check (
+  public.current_profile_role() in ('admin', 'supervisor')
+  or public.can_manage_appointment_team(advisor_team)
+);
 
 drop policy if exists appointments_admin_delete on public.appointments;
 create policy appointments_admin_delete on public.appointments
 for delete to authenticated
-using (public.current_profile_role() = 'admin');
+using (
+  public.current_profile_role() in ('admin', 'supervisor')
+  or public.can_manage_appointment_team(advisor_team)
+);
 
 grant select on public.profiles to authenticated;
 grant update (full_name, role, team, color, active) on public.profiles to authenticated;
