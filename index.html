@@ -95,9 +95,10 @@
     .week { display: grid; grid-template-columns: repeat(7, minmax(110px, 1fr)); overflow-x: auto; }
     .day { min-width: 110px; border-right: 1px solid var(--border); }
     .day:last-child { border-right: 0; }
-    .day-head { height: 72px; padding: 12px; border-bottom: 1px solid var(--border); }
+    .day-head { width: 100%; height: 72px; display: block; padding: 12px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: inherit; text-align: left; cursor: pointer; }
     .day-name { display: block; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
     .day-number { display: block; margin-top: 2px; font: 500 22px/1.2 var(--font-mono); font-variant-numeric: tabular-nums; }
+    .day-indicator { display: none; }
     .day.today .day-number { width: 34px; height: 34px; margin-top: 0; display: grid; place-items: center; border-radius: 50%; background: var(--fg); color: var(--surface); }
     .day.selected, .month-day.selected { box-shadow: inset 0 0 0 2px var(--accent); }
     .day-body { min-height: 430px; padding: 10px 8px; background-image: linear-gradient(to bottom, transparent 59px, var(--border) 60px); background-size: 100% 60px; }
@@ -253,15 +254,18 @@
       .calendar-filters { width: 100%; margin: 6px 0 0; display: grid; grid-template-columns: 1fr 1fr; }
       .filter-wrap { min-width: 0; display: grid; gap: 5px; }
       .filter-wrap select { width: 100%; min-width: 0; }
-      .week { display: block; overflow: visible; }
-      .day { display: none; min-width: 0; border-right: 0; }
-      .day.selected { display: block; }
-      .day-head { height: 58px; display: flex; align-items: center; gap: 10px; }
-      .day-name { font-size: 12px; }
-      .day-number { margin: 0; }
-      .day.today .day-number { order: -1; }
-      .day-body { min-height: 250px; background-size: 100% 72px; }
-      .event { min-height: 64px; padding: 11px 12px; }
+      .week:not(.month-view) { width: 100%; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); overflow: hidden; }
+      .week:not(.month-view) .day { min-width: 0; border-right: 1px solid var(--border); }
+      .week:not(.month-view) .day:last-child { border-right: 0; }
+      .week:not(.month-view) .day.selected { background: var(--success-bg); }
+      .week:not(.month-view) .day-head { height: 78px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 1px 5px; text-align: center; }
+      .week:not(.month-view) .day-name { font-size: 9px; letter-spacing: .04em; }
+      .week:not(.month-view) .day-number { margin: 0; font-size: 17px; line-height: 30px; }
+      .week:not(.month-view) .day.today .day-number { width: 30px; height: 30px; margin: 0; }
+      .week:not(.month-view) .day-indicator { min-height: 18px; display: grid; place-items: center; }
+      .day-dot { width: 6px; height: 6px; display: block; border-radius: 50%; background: var(--accent); }
+      .day-count { min-width: 18px; height: 18px; display: grid; place-items: center; padding: 0 4px; border-radius: 999px; background: var(--accent); color: var(--surface); font: 700 10px/1 var(--font-mono); }
+      .week:not(.month-view) .day-body { display: none; }
       .week.month-view { display: grid; grid-template-columns: repeat(7, minmax(104px, 1fr)); overflow-x: auto; }
       .month-weekdays { grid-template-columns: repeat(7, minmax(104px, 1fr)); }
       .month-day { min-height: 112px; }

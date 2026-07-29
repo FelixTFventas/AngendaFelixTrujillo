@@ -243,9 +243,16 @@ function renderWeek(filtered) {
   grid.innerHTML = days.map(day => {
     const key = dateKey(day);
     const events = filtered.filter(appointment => appointment.date === key).sort((a, b) => a.time.localeCompare(b.time));
-    const classes = ['day', sameDay(day, startOfDay(new Date())) ? 'today' : '', sameDay(day, selectedDate) ? 'selected' : ''].filter(Boolean).join(' ');
+    const isToday = sameDay(day, startOfDay(new Date()));
+    const isSelected = sameDay(day, selectedDate);
+    const classes = ['day', isToday ? 'today' : '', isSelected ? 'selected' : ''].filter(Boolean).join(' ');
+    const formattedDate = capitalize(new Intl.DateTimeFormat('es', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(day));
+    const appointmentLabel = `${events.length} ${events.length === 1 ? 'cita' : 'citas'}`;
+    const indicator = events.length > 1
+      ? `<span class="day-count">${events.length}</span>`
+      : events.length === 1 ? '<span class="day-dot"></span>' : '';
     return `<div class="${classes}" data-date="${key}">
-      <div class="day-head"><span class="day-name">${capitalize(new Intl.DateTimeFormat('es', { weekday: 'short' }).format(day).replace('.', ''))}</span><span class="day-number">${day.getDate()}</span></div>
+      <button class="day-head" type="button" data-date="${key}" aria-label="${formattedDate}, ${appointmentLabel}" aria-pressed="${isSelected}"><span class="day-name">${capitalize(new Intl.DateTimeFormat('es', { weekday: 'short' }).format(day).replace('.', ''))}</span><span class="day-number">${day.getDate()}</span><span class="day-indicator" aria-hidden="true">${indicator}</span></button>
       <div class="day-body">${events.map(event => `<button class="event ${event.team} advisor-color ${advisorColor(event.advisor, event.color)}" data-date="${event.date}" data-appointment-id="${event.id}"><time>${escapeHTML(event.time)}</time><strong>${escapeHTML(event.subject)}</strong><span>${escapeHTML(event.client)}</span></button>`).join('')}</div>
     </div>`;
   }).join('');
