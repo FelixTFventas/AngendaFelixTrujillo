@@ -150,6 +150,7 @@
     .advisors-view { max-width: 1120px; }
     .admin-view { max-width: 1280px; }
     .admin-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 18px; align-items: start; }
+    .admin-layout + .admin-layout { margin-top: 18px; }
     .admin-card { overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
     .admin-card-head { padding: 18px 20px; border-bottom: 1px solid var(--border); }
     .admin-card-head h2 { margin: 0; font-size: 19px; }
@@ -166,6 +167,7 @@
     .create-user-form { padding: 20px; }
     .create-user-form .field + .field { margin-top: 13px; }
     .create-user-form .primary { width: 100%; margin-top: 18px; }
+    .external-advisor-row { grid-template-columns: minmax(150px, 1fr) 120px auto; }
     .password-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
     .loading-state { padding: 32px 20px; color: var(--muted); text-align: center; }
     .advisors-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
@@ -294,6 +296,8 @@
       .auth-panel { padding: 30px 24px 34px; }
       .user-row { grid-template-columns: 1fr auto; }
       .user-row .user-email { grid-column: 1 / -1; grid-row: 2; }
+      .external-advisor-row .role-badge { grid-column: 1; grid-row: 2; }
+      .external-advisor-row .external-advisor-toggle { grid-column: 2; grid-row: 1 / 3; }
       .toast { left: 14px; right: 14px; bottom: 82px; }
     }
     @media (prefers-reduced-motion: reduce) {
@@ -388,6 +392,22 @@
             <div class="field"><label for="temporaryPassword">Contraseña temporal</label><div class="password-row"><input id="temporaryPassword" name="temporary_password" type="text" minlength="10" required><button class="ghost" id="generatePassword" type="button">Generar</button></div></div>
             <button class="primary" type="submit">Crear usuario</button>
             <p class="form-message" id="createUserMessage" role="alert"></p>
+          </form>
+        </aside>
+      </div>
+      <div class="admin-layout">
+        <section class="admin-card">
+          <div class="admin-card-head"><h2>Asesores sin acceso</h2><p>Están disponibles para recibir citas, pero no pueden ingresar al sistema.</p></div>
+          <ul class="users-list" id="externalAdvisorsList"><li class="loading-state">Cargando asesores...</li></ul>
+        </section>
+        <aside class="admin-card">
+          <div class="admin-card-head"><h2>Agregar asesor</h2><p>No requiere correo ni contraseña.</p></div>
+          <form class="create-user-form" id="createExternalAdvisorForm">
+            <div class="field"><label for="externalAdvisorName">Nombre completo</label><input id="externalAdvisorName" name="full_name" maxlength="160" required></div>
+            <div class="field"><label for="externalAdvisorTeam">Equipo</label><select id="externalAdvisorTeam" name="team"><option value="rental">Arrendamientos</option><option value="sales">Ventas</option></select></div>
+            <div class="field"><label for="externalAdvisorColor">Color</label><select id="externalAdvisorColor" name="color"><option value="amber">Ámbar</option><option value="teal">Turquesa</option><option value="blue">Azul</option><option value="violet">Violeta</option><option value="coral">Coral</option></select></div>
+            <button class="primary" type="submit">Agregar asesor</button>
+            <p class="form-message" id="createExternalAdvisorMessage" role="alert"></p>
           </form>
         </aside>
       </div>

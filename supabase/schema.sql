@@ -53,6 +53,30 @@ begin
 end
 $$;
 
+create table if not exists public.advisors (
+  id uuid primary key default gen_random_uuid(),
+  profile_id uuid unique references public.profiles(id) on delete cascade,
+  full_name text not null check (char_length(trim(full_name)) >= 1),
+  team public.team_type not null,
+  color text not null check (color in ('amber', 'teal', 'blue', 'violet', 'coral')),
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint linked_advisor_id check (profile_id is null or id = profile_id)
+);
+
+insert into public.advisors (id, profile_id, full_name, team, color, active)
+select id, id, coalesce(nullif(trim(full_name), ''), 'Asesor sin nombre'), team, coalesce(color, 'blue'), active
+from public.profiles
+where team is not null
+on conflict (id) do update set
+  profile_id = excluded.profile_id,
+  full_name = excluded.full_name,
+  team = excluded.team,
+  color = excluded.color,
+  active = excluded.active,
+  updated_at = now();
+
 create table if not exists public.appointments (
   id uuid primary key default gen_random_uuid(),
   appointment_date date not null,
@@ -63,7 +87,7 @@ create table if not exists public.appointments (
   property text not null default '',
   status public.appointment_status not null default 'pending',
   notes text not null default '',
-  advisor_id uuid not null references public.profiles(id),
+  advisor_id uuid not null references public.advisors(id),
   advisor_name text not null,
   advisor_team public.team_type not null,
   advisor_color text not null,
@@ -72,6 +96,25 @@ create table if not exists public.appointments (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+insert into public.advisors (id, profile_id, full_name, team, color, active)
+select distinct on (appointment.advisor_id)
+  appointment.advisor_id,
+  profile.id,
+  coalesce(nullif(trim(appointment.advisor_name), ''), 'Asesor sin nombre'),
+  appointment.advisor_team,
+  case when appointment.advisor_color in ('amber', 'teal', 'blue', 'violet', 'coral') then appointment.advisor_color else 'blue' end,
+  false
+from public.appointments appointment
+left join public.profiles profile on profile.id = appointment.advisor_id
+where not exists (
+  select 1 from public.advisors advisor where advisor.id = appointment.advisor_id
+)
+order by appointment.advisor_id, appointment.updated_at desc;
+
+alter table public.appointments drop constraint if exists appointments_advisor_id_fkey;
+alter table public.appointments
+  add constraint appointments_advisor_id_fkey foreign key (advisor_id) references public.advisors(id);
 
 create index if not exists appointments_date_idx on public.appointments(appointment_date, appointment_time);
 create index if not exists appointments_advisor_idx on public.appointments(advisor_id);
@@ -129,10 +172,11 @@ stable
 security definer
 set search_path = public
 as $$
-  select p.id, p.full_name, p.team, p.color, p.role
-  from public.profiles p
-  where public.is_active_user() and p.active = true and p.team is not null
-  order by p.full_name;
+  select a.id, a.full_name, a.team, a.color, coalesce(p.role, 'advisor'::public.app_role)
+  from public.advisors a
+  left join public.profiles p on p.id = a.profile_id
+  where public.is_active_user() and a.active = true
+  order by a.full_name;
 $$;
 
 grant execute on function public.list_advisors() to authenticated;
@@ -170,8 +214,41 @@ begin
 end;
 $$;
 
+create or replace function public.sync_profile_advisor()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.team is null then
+    update public.advisors set active = false
+    where profile_id = new.id;
+  else
+    insert into public.advisors (id, profile_id, full_name, team, color, active)
+    values (new.id, new.id, coalesce(nullif(trim(new.full_name), ''), 'Asesor sin nombre'), new.team, coalesce(new.color, 'blue'), new.active)
+    on conflict (id) do update set
+      profile_id = excluded.profile_id,
+      full_name = excluded.full_name,
+      team = excluded.team,
+      color = excluded.color,
+      active = excluded.active,
+      updated_at = now();
+  end if;
+  return new;
+end;
+$$;
+
 drop trigger if exists profiles_updated_at on public.profiles;
 create trigger profiles_updated_at before update on public.profiles
+for each row execute function public.set_updated_at();
+
+drop trigger if exists profiles_sync_advisor on public.profiles;
+create trigger profiles_sync_advisor after insert or update of full_name, team, color, active on public.profiles
+for each row execute function public.sync_profile_advisor();
+
+drop trigger if exists advisors_updated_at on public.advisors;
+create trigger advisors_updated_at before update on public.advisors
 for each row execute function public.set_updated_at();
 
 create or replace function public.prepare_appointment()
@@ -181,11 +258,11 @@ security definer
 set search_path = public
 as $$
 declare
-  assigned public.profiles%rowtype;
+  assigned public.advisors%rowtype;
 begin
   select * into assigned
-  from public.profiles
-  where id = new.advisor_id and active = true and team is not null;
+  from public.advisors
+  where id = new.advisor_id and active = true;
 
   if not found then
     raise exception 'El asesor seleccionado no está disponible.';
@@ -211,6 +288,7 @@ create trigger appointments_prepare before insert or update on public.appointmen
 for each row execute function public.prepare_appointment();
 
 alter table public.profiles enable row level security;
+alter table public.advisors enable row level security;
 alter table public.appointments enable row level security;
 
 drop policy if exists profiles_read on public.profiles;
@@ -223,6 +301,22 @@ create policy profiles_admin_update on public.profiles
 for update to authenticated
 using (public.current_profile_role() = 'admin')
 with check (public.current_profile_role() = 'admin');
+
+drop policy if exists advisors_admin_read on public.advisors;
+create policy advisors_admin_read on public.advisors
+for select to authenticated
+using (public.current_profile_role() = 'admin');
+
+drop policy if exists advisors_admin_create on public.advisors;
+create policy advisors_admin_create on public.advisors
+for insert to authenticated
+with check (public.current_profile_role() = 'admin' and profile_id is null);
+
+drop policy if exists advisors_admin_update_external on public.advisors;
+create policy advisors_admin_update_external on public.advisors
+for update to authenticated
+using (public.current_profile_role() = 'admin' and profile_id is null)
+with check (public.current_profile_role() = 'admin' and profile_id is null);
 
 drop policy if exists appointments_read on public.appointments;
 create policy appointments_read on public.appointments
@@ -263,6 +357,9 @@ using (
 
 grant select on public.profiles to authenticated;
 grant update (full_name, role, team, color, active) on public.profiles to authenticated;
+grant select on public.advisors to authenticated;
+grant insert (full_name, team, color) on public.advisors to authenticated;
+grant update (active) on public.advisors to authenticated;
 grant select, insert, update, delete on public.appointments to authenticated;
 
 do $$

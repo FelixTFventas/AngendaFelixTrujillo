@@ -226,6 +226,12 @@ function setAdvisorOptions(select, team, selectedValue = '', allowAll = false) {
   if ([...select.options].some(option => option.value === selectedValue)) select.value = selectedValue;
 }
 
+function refreshAdvisorUI(selectedAdvisor = advisorFilter.value) {
+  setAdvisorOptions(advisorFilter, teamFilter.value, selectedAdvisor, true);
+  renderAdvisors();
+  render();
+}
+
 function renderAdvisors() {
   document.querySelector('#advisorsByTeam').innerHTML = Object.entries(teams).map(([team, label]) => {
     const members = advisors.filter(advisor => advisor.team === team);
@@ -443,7 +449,10 @@ function showSection(section) {
     button.classList.toggle('active', active);
     if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
   });
-  if (section === 'admin') loadUsers();
+  if (section === 'admin') {
+    loadUsers();
+    loadExternalAdvisors();
+  }
 }
 
 async function loadUsers() {
@@ -469,9 +478,70 @@ async function toggleUser(button) {
   if (error) showToast(readableError(error)); else {
     showToast(active ? 'Usuario desactivado.' : 'Usuario activado.');
     await Promise.all([loadUsers(), loadAdvisors()]);
-    renderAdvisors();
+    refreshAdvisorUI();
   }
   button.disabled = false;
+}
+
+async function loadExternalAdvisors() {
+  const advisorsList = document.querySelector('#externalAdvisorsList');
+  advisorsList.innerHTML = '<li class="loading-state">Cargando asesores...</li>';
+  const { data, error } = await supabaseClient
+    .from('advisors')
+    .select('id, full_name, team, color, active')
+    .is('profile_id', null)
+    .order('full_name');
+  if (error) {
+    advisorsList.innerHTML = `<li class="loading-state">${escapeHTML(readableError(error))}</li>`;
+    return;
+  }
+  advisorsList.innerHTML = data.length ? data.map(advisor => `<li class="user-row external-advisor-row">
+    <div class="user-identity"><strong>${escapeHTML(advisor.full_name)}</strong><span>Sin acceso al sistema</span></div>
+    <span class="role-badge advisor-color ${advisor.color}">${escapeHTML(teams[advisor.team])}</span>
+    <button class="ghost external-advisor-toggle" type="button" data-advisor-id="${advisor.id}" data-active="${advisor.active}"><span class="status-dot ${advisor.active ? 'active' : ''}">${advisor.active ? 'Activo' : 'Inactivo'}</span></button>
+  </li>`).join('') : '<li class="loading-state">No hay asesores sin acceso registrados.</li>';
+}
+
+async function toggleExternalAdvisor(button) {
+  const active = button.dataset.active === 'true';
+  button.disabled = true;
+  const { error } = await supabaseClient.from('advisors').update({ active: !active }).eq('id', button.dataset.advisorId);
+  if (error) {
+    showToast(readableError(error));
+    button.disabled = false;
+    return;
+  }
+  showToast(active ? 'Asesor desactivado.' : 'Asesor activado.');
+  await Promise.all([loadExternalAdvisors(), loadAdvisors()]);
+  refreshAdvisorUI();
+}
+
+async function createExternalAdvisor(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const payload = {
+    full_name: data.get('full_name').trim(),
+    team: data.get('team'),
+    color: data.get('color'),
+  };
+  const message = document.querySelector('#createExternalAdvisorMessage');
+  message.textContent = '';
+  if (!payload.full_name) {
+    message.textContent = 'Escribe el nombre del asesor.';
+    return;
+  }
+  setBusy(form, true);
+  const { error } = await supabaseClient.from('advisors').insert(payload);
+  setBusy(form, false);
+  if (error) {
+    message.textContent = readableError(error);
+    return;
+  }
+  form.reset();
+  showToast('Asesor agregado sin acceso al sistema.');
+  await Promise.all([loadExternalAdvisors(), loadAdvisors()]);
+  refreshAdvisorUI();
 }
 
 async function createUser(event) {
@@ -502,7 +572,7 @@ async function createUser(event) {
   updateCreateUserFields();
   showToast('Usuario creado con contraseña temporal.');
   await Promise.all([loadUsers(), loadAdvisors()]);
-  renderAdvisors();
+  refreshAdvisorUI();
 }
 
 function updateCreateUserFields() {
@@ -683,7 +753,12 @@ document.querySelector('#usersList').addEventListener('click', event => {
   const button = event.target.closest('.user-toggle');
   if (button) toggleUser(button);
 });
+document.querySelector('#externalAdvisorsList').addEventListener('click', event => {
+  const button = event.target.closest('.external-advisor-toggle');
+  if (button) toggleExternalAdvisor(button);
+});
 document.querySelector('#createUserForm').addEventListener('submit', createUser);
+document.querySelector('#createExternalAdvisorForm').addEventListener('submit', createExternalAdvisor);
 document.querySelector('#newUserRole').addEventListener('change', updateCreateUserFields);
 document.querySelector('#generatePassword').addEventListener('click', generatePassword);
 

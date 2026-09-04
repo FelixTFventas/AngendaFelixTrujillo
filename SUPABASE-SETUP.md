@@ -9,6 +9,10 @@ La aplicación ya contiene la URL y la clave pública del proyecto. La clave adm
 3. Copia y ejecuta todo el contenido de `supabase/schema.sql`.
 4. Confirma que la ejecución termine sin errores.
 
+### Actualizar un proyecto existente
+
+Si el proyecto ya estaba en funcionamiento antes de incorporar asesores sin acceso, ejecuta una sola vez `supabase/add-external-advisors.sql` desde **SQL Editor**. El script migra los asesores y las citas actuales sin cambiar sus identificadores.
+
 ## 2. Crear el administrador inicial
 
 1. Entra en **Authentication > Users**.
@@ -54,6 +58,12 @@ Inicia sesión como Yunior y abre **Usuarios**. Crea cada cuenta con una contras
 
 Después de crear a Paola y Patricia, ejecuta una sola vez todo el contenido de `supabase/enable-sales-team-appointment-managers.sql` en **SQL Editor**. El script valida sus perfiles antes de activar la capacidad y cancela toda la operación si no son asesoras de Ventas.
 
+## 6. Crear asesores sin acceso
+
+El administrador puede abrir **Usuarios > Asesores sin acceso** y registrar personas que solo necesitan recibir citas. Se solicita nombre, equipo y color; no se crea una cuenta en Authentication ni se requiere correo o contraseña.
+
+Estos asesores pueden activarse o desactivarse desde la misma sección. Al desactivarlos dejan de aparecer en nuevas citas, pero se conserva todo su historial.
+
 ## Permisos aplicados
 
 - Todos los usuarios activos pueden consultar todas las citas.
@@ -61,4 +71,5 @@ Después de crear a Paola y Patricia, ejecuta una sola vez todo el contenido de 
 - Paola Crespo y Patricia Trujillo gestionan todas las citas de Ventas y consultan Arrendamientos en modo lectura.
 - La supervisora crea, edita, reasigna y elimina citas de cualquier equipo.
 - El administrador gestiona usuarios y tiene control completo sobre las citas.
+- Solo el administrador crea y activa o desactiva asesores sin acceso.
 - Nadie puede consultar la agenda hasta cambiar su contraseña temporal.
