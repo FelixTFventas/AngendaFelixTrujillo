@@ -13,6 +13,8 @@ La aplicación ya contiene la URL y la clave pública del proyecto. La clave adm
 
 Si el proyecto ya estaba en funcionamiento antes de incorporar asesores sin acceso, ejecuta una sola vez `supabase/add-external-advisors.sql` desde **SQL Editor**. El script migra los asesores y las citas actuales sin cambiar sus identificadores.
 
+Después, ejecuta una sola vez `supabase/expand-unique-advisor-colors.sql`. Esta segunda migración amplía la paleta a doce colores y reserva un color diferente para cada asesor, incluso cuando esté inactivo. Si encuentra colores repetidos, conserva la asignación más antigua y distribuye automáticamente colores libres. Solo se detiene si existen más de doce asesores.
+
 ## 2. Crear el administrador inicial
 
 1. Entra en **Authentication > Users**.
@@ -30,6 +32,8 @@ En **Edge Functions**, crea y publica estas dos funciones usando los archivos in
 
 - `admin-create-user`: `supabase/functions/admin-create-user/index.ts`
 - `change-password`: `supabase/functions/change-password/index.ts`
+
+Después de aplicar `supabase/expand-unique-advisor-colors.sql`, vuelve a desplegar `admin-create-user` para que acepte la paleta ampliada y valide colores ocupados.
 
 Supabase proporciona automáticamente a las funciones `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`. No copies esos valores al HTML ni a `supabase-config.js`.
 
@@ -63,6 +67,8 @@ Después de crear a Paola y Patricia, ejecuta una sola vez todo el contenido de 
 El administrador puede abrir **Usuarios > Asesores sin acceso** y registrar personas que solo necesitan recibir citas. Se solicita nombre, equipo y color; no se crea una cuenta en Authentication ni se requiere correo o contraseña.
 
 Estos asesores pueden activarse o desactivarse desde la misma sección. Al desactivarlos dejan de aparecer en nuevas citas, pero se conserva todo su historial.
+
+La paleta disponible es Ámbar, Turquesa, Azul, Violeta, Coral, Esmeralda, Índigo, Rosa, Naranja, Cian, Lima y Gris pizarra. Los colores asignados aparecen deshabilitados en los formularios y permanecen reservados al desactivar un asesor.
 
 ## Permisos aplicados
 

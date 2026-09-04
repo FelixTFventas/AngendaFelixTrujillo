@@ -111,6 +111,13 @@
     .advisor-color.blue { --advisor-bg: oklch(95% .04 245); --advisor-fg: oklch(40% .12 245); }
     .advisor-color.violet { --advisor-bg: oklch(95% .04 300); --advisor-fg: oklch(40% .12 300); }
     .advisor-color.coral { --advisor-bg: oklch(95% .05 25); --advisor-fg: oklch(42% .14 25); }
+    .advisor-color.emerald { --advisor-bg: oklch(95% .05 150); --advisor-fg: oklch(35% .12 150); }
+    .advisor-color.indigo { --advisor-bg: oklch(95% .045 275); --advisor-fg: oklch(38% .13 275); }
+    .advisor-color.rose { --advisor-bg: oklch(95% .05 355); --advisor-fg: oklch(40% .14 355); }
+    .advisor-color.orange { --advisor-bg: oklch(95% .065 55); --advisor-fg: oklch(40% .13 45); }
+    .advisor-color.cyan { --advisor-bg: oklch(95% .045 210); --advisor-fg: oklch(36% .11 215); }
+    .advisor-color.lime { --advisor-bg: oklch(96% .06 120); --advisor-fg: oklch(36% .11 120); }
+    .advisor-color.slate { --advisor-bg: oklch(94% .015 250); --advisor-fg: oklch(36% .04 250); }
     .advisor-color.neutral { --advisor-bg: var(--bg); --advisor-fg: var(--muted); }
     .event.advisor-color { background: var(--advisor-bg); color: var(--advisor-fg); box-shadow: inset 3px 0 0 var(--advisor-fg); }
     .event time { display: block; margin-bottom: 4px; font: 600 11px/1.2 var(--font-mono); letter-spacing: .02em; }
@@ -388,7 +395,7 @@
             <div class="field"><label for="newUserEmail">Correo</label><input id="newUserEmail" name="email" type="email" required></div>
             <div class="field"><label for="newUserRole">Rol</label><select id="newUserRole" name="role"><option value="advisor">Asesor</option><option value="supervisor">Supervisor</option></select></div>
             <div class="field advisor-setting"><label for="newUserTeam">Equipo</label><select id="newUserTeam" name="team"><option value="rental">Arrendamientos</option><option value="sales">Ventas</option></select></div>
-            <div class="field advisor-setting"><label for="newUserColor">Color</label><select id="newUserColor" name="color"><option value="amber">Ámbar</option><option value="teal">Turquesa</option><option value="blue">Azul</option><option value="violet">Violeta</option><option value="coral">Coral</option></select></div>
+            <div class="field advisor-setting"><label for="newUserColor">Color</label><select id="newUserColor" name="color"><option value="amber">Ámbar</option><option value="teal">Turquesa</option><option value="blue">Azul</option><option value="violet">Violeta</option><option value="coral">Coral</option><option value="emerald">Esmeralda</option><option value="indigo">Índigo</option><option value="rose">Rosa</option><option value="orange">Naranja</option><option value="cyan">Cian</option><option value="lime">Lima</option><option value="slate">Gris pizarra</option></select></div>
             <div class="field"><label for="temporaryPassword">Contraseña temporal</label><div class="password-row"><input id="temporaryPassword" name="temporary_password" type="text" minlength="10" required><button class="ghost" id="generatePassword" type="button">Generar</button></div></div>
             <button class="primary" type="submit">Crear usuario</button>
             <p class="form-message" id="createUserMessage" role="alert"></p>
@@ -405,7 +412,7 @@
           <form class="create-user-form" id="createExternalAdvisorForm">
             <div class="field"><label for="externalAdvisorName">Nombre completo</label><input id="externalAdvisorName" name="full_name" maxlength="160" required></div>
             <div class="field"><label for="externalAdvisorTeam">Equipo</label><select id="externalAdvisorTeam" name="team"><option value="rental">Arrendamientos</option><option value="sales">Ventas</option></select></div>
-            <div class="field"><label for="externalAdvisorColor">Color</label><select id="externalAdvisorColor" name="color"><option value="amber">Ámbar</option><option value="teal">Turquesa</option><option value="blue">Azul</option><option value="violet">Violeta</option><option value="coral">Coral</option></select></div>
+            <div class="field"><label for="externalAdvisorColor">Color</label><select id="externalAdvisorColor" name="color"><option value="amber">Ámbar</option><option value="teal">Turquesa</option><option value="blue">Azul</option><option value="violet">Violeta</option><option value="coral">Coral</option><option value="emerald">Esmeralda</option><option value="indigo">Índigo</option><option value="rose">Rosa</option><option value="orange">Naranja</option><option value="cyan">Cian</option><option value="lime">Lima</option><option value="slate">Gris pizarra</option></select></div>
             <button class="primary" type="submit">Agregar asesor</button>
             <p class="form-message" id="createExternalAdvisorMessage" role="alert"></p>
           </form>

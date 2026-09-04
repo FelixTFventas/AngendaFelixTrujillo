@@ -1,5 +1,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
+const advisorColors = ['amber', 'teal', 'blue', 'violet', 'coral', 'emerald', 'indigo', 'rose', 'orange', 'cyan', 'lime', 'slate']
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
@@ -39,13 +41,24 @@ Deno.serve(async (request) => {
     const password = String(body.temporary_password || '')
     const role = body.role === 'supervisor' ? 'supervisor' : 'advisor'
     const team = role === 'advisor' && ['rental', 'sales'].includes(body.team) ? body.team : null
-    const color = role === 'advisor' && ['amber', 'teal', 'blue', 'violet', 'coral'].includes(body.color) ? body.color : null
+    const color = role === 'advisor' && advisorColors.includes(body.color) ? body.color : null
 
     if (!email || !fullName || password.length < 10) {
       return json({ error: 'Completa el nombre, correo y una contraseña temporal de al menos 10 caracteres.' }, 400)
     }
     if (role === 'advisor' && (!team || !color)) {
       return json({ error: 'Los asesores requieren equipo y color.' }, 400)
+    }
+
+    if (color) {
+      const { data: assignedColor, error: colorError } = await admin
+        .from('advisors')
+        .select('id')
+        .eq('color', color)
+        .maybeSingle()
+
+      if (colorError) return json({ error: 'No fue posible validar el color seleccionado.' }, 500)
+      if (assignedColor) return json({ error: 'Ese color ya está asignado a otro asesor.' }, 409)
     }
 
     const { data: created, error: createError } = await admin.auth.admin.createUser({
@@ -74,7 +87,13 @@ Deno.serve(async (request) => {
       .single()
 
     if (profileError) {
-      await admin.auth.admin.deleteUser(created.user.id)
+      const { error: deleteError } = await admin.auth.admin.deleteUser(created.user.id)
+      if (deleteError) {
+        return json({ error: 'No se completó el perfil y no fue posible limpiar la cuenta creada. Revísala en Authentication.' }, 500)
+      }
+      if (profileError.code === '23505') {
+        return json({ error: 'Ese color ya está asignado a otro asesor.' }, 409)
+      }
       return json({ error: 'No fue posible completar el perfil del usuario.' }, 500)
     }
 

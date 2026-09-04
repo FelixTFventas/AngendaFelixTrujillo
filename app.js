@@ -7,6 +7,7 @@ const statusLabel = { pending: 'Pendiente', confirmed: 'Confirmada', completed: 
 
 let appointments = [];
 let advisors = [];
+let reservedAdvisorColors = new Set();
 let currentProfile = null;
 let currentUser = null;
 let appointmentsChannel = null;
@@ -61,10 +62,14 @@ function canDeleteAppointment(appointment) { return canManageAppointment(appoint
 function advisorColor(advisorName, savedColor = '') {
   return savedColor || advisors.find(advisor => advisor.name === advisorName)?.color || 'neutral';
 }
+function isAdvisorColorConflict(message) {
+  return /advisors_color_unique|duplicate key.*color|color.*already.*assigned|color.*ya est[aá] asignado/i.test(String(message || ''));
+}
 function readableError(error, fallback = 'No fue posible completar la acción.') {
   const message = error?.message || error?.error_description || fallback;
   if (/invalid login credentials/i.test(message)) return 'Correo o contraseña incorrectos.';
   if (/failed to fetch/i.test(message)) return 'No fue posible conectar con el servidor.';
+  if (isAdvisorColorConflict(message)) return 'Ese color ya está asignado a otro asesor.';
   if (/duplicate|already been registered|already exists/i.test(message)) return 'Ya existe un usuario con ese correo.';
   return message;
 }
@@ -313,6 +318,9 @@ function openAppointmentDialog(appointment = null) {
     ['subject', 'date', 'time', 'client', 'phone', 'property', 'status', 'notes'].forEach(name => { appointmentForm.elements[name].value = appointment[name] || ''; });
     formTeam.value = appointment.team;
     setAdvisorOptions(formAdvisor, appointment.team, appointment.advisorId);
+    if (![...formAdvisor.options].some(option => option.value === appointment.advisorId)) {
+      formAdvisor.add(new Option(`${appointment.advisor} (inactivo)`, appointment.advisorId, true, true), 1);
+    }
   } else if (!canAssignAppointments()) {
     formTeam.value = currentProfile.team;
     setAdvisorOptions(formAdvisor, currentProfile.team, currentProfile.id);
@@ -488,14 +496,16 @@ async function loadExternalAdvisors() {
   advisorsList.innerHTML = '<li class="loading-state">Cargando asesores...</li>';
   const { data, error } = await supabaseClient
     .from('advisors')
-    .select('id, full_name, team, color, active')
-    .is('profile_id', null)
+    .select('id, profile_id, full_name, team, color, active')
     .order('full_name');
   if (error) {
     advisorsList.innerHTML = `<li class="loading-state">${escapeHTML(readableError(error))}</li>`;
     return;
   }
-  advisorsList.innerHTML = data.length ? data.map(advisor => `<li class="user-row external-advisor-row">
+  reservedAdvisorColors = new Set(data.map(advisor => advisor.color));
+  updateAvailableAdvisorColors();
+  const externalAdvisors = data.filter(advisor => !advisor.profile_id);
+  advisorsList.innerHTML = externalAdvisors.length ? externalAdvisors.map(advisor => `<li class="user-row external-advisor-row">
     <div class="user-identity"><strong>${escapeHTML(advisor.full_name)}</strong><span>Sin acceso al sistema</span></div>
     <span class="role-badge advisor-color ${advisor.color}">${escapeHTML(teams[advisor.team])}</span>
     <button class="ghost external-advisor-toggle" type="button" data-advisor-id="${advisor.id}" data-active="${advisor.active}"><span class="status-dot ${advisor.active ? 'active' : ''}">${advisor.active ? 'Activo' : 'Inactivo'}</span></button>
@@ -531,11 +541,16 @@ async function createExternalAdvisor(event) {
     message.textContent = 'Escribe el nombre del asesor.';
     return;
   }
+  if (!payload.color || reservedAdvisorColors.has(payload.color)) {
+    message.textContent = 'Selecciona un color disponible.';
+    return;
+  }
   setBusy(form, true);
   const { error } = await supabaseClient.from('advisors').insert(payload);
   setBusy(form, false);
   if (error) {
     message.textContent = readableError(error);
+    if (isAdvisorColorConflict(error.message)) await loadExternalAdvisors();
     return;
   }
   form.reset();
@@ -559,6 +574,10 @@ async function createUser(event) {
   };
   const message = document.querySelector('#createUserMessage');
   message.textContent = '';
+  if (role === 'advisor' && (!payload.color || reservedAdvisorColors.has(payload.color))) {
+    message.textContent = 'Selecciona un color disponible.';
+    return;
+  }
   setBusy(form, true);
   const { error } = await supabaseClient.functions.invoke('admin-create-user', { body: payload });
   setBusy(form, false);
@@ -566,21 +585,56 @@ async function createUser(event) {
     let functionMessage = error.message;
     try { functionMessage = (await error.context.json()).error || functionMessage; } catch {}
     message.textContent = readableError({ message: functionMessage });
+    if (isAdvisorColorConflict(functionMessage)) await loadExternalAdvisors();
     return;
   }
   form.reset();
   updateCreateUserFields();
   showToast('Usuario creado con contraseña temporal.');
-  await Promise.all([loadUsers(), loadAdvisors()]);
+  await Promise.all([loadUsers(), loadExternalAdvisors(), loadAdvisors()]);
   refreshAdvisorUI();
+}
+
+function updateAvailableAdvisorColors() {
+  document.querySelectorAll('#newUserColor, #externalAdvisorColor').forEach(select => {
+    [...select.options].forEach(option => {
+      const label = option.dataset.label || option.textContent.replace(/ · asignado$/, '');
+      option.dataset.label = label;
+      option.disabled = reservedAdvisorColors.has(option.value);
+      option.textContent = option.disabled ? `${label} · asignado` : label;
+    });
+    const selectedOption = [...select.options].find(option => option.value === select.value);
+    if (!selectedOption || selectedOption.disabled) {
+      select.value = [...select.options].find(option => !option.disabled)?.value || '';
+    }
+  });
+
+  const externalColor = document.querySelector('#externalAdvisorColor');
+  const hasAvailableColor = [...externalColor.options].some(option => !option.disabled);
+  externalColor.disabled = !hasAvailableColor;
+  document.querySelector('#createExternalAdvisorForm button[type="submit"]').disabled = !hasAvailableColor;
+  const externalMessage = document.querySelector('#createExternalAdvisorMessage');
+  const exhaustedMessage = 'No hay colores disponibles en la paleta.';
+  if (!hasAvailableColor) externalMessage.textContent = exhaustedMessage;
+  else if (externalMessage.textContent === exhaustedMessage) externalMessage.textContent = '';
+  updateCreateUserFields();
 }
 
 function updateCreateUserFields() {
   const isAdvisor = document.querySelector('#newUserRole').value === 'advisor';
+  const userColor = document.querySelector('#newUserColor');
+  const hasAvailableColor = [...userColor.options].some(option => !option.disabled);
   document.querySelectorAll('.advisor-setting').forEach(field => {
     field.hidden = !isAdvisor;
-    field.querySelector('select').disabled = !isAdvisor;
+    const select = field.querySelector('select');
+    const hasAvailableOption = [...select.options].some(option => !option.disabled);
+    select.disabled = !isAdvisor || !hasAvailableOption;
   });
+  document.querySelector('#createUserForm button[type="submit"]').disabled = isAdvisor && !hasAvailableColor;
+  const message = document.querySelector('#createUserMessage');
+  const exhaustedMessage = 'No hay colores disponibles en la paleta.';
+  if (isAdvisor && !hasAvailableColor) message.textContent = exhaustedMessage;
+  else if (message.textContent === exhaustedMessage) message.textContent = '';
 }
 
 function generatePassword() {
