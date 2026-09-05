@@ -15,6 +15,8 @@ Si el proyecto ya estaba en funcionamiento antes de incorporar asesores sin acce
 
 Después, ejecuta una sola vez `supabase/expand-unique-advisor-colors.sql`. Esta segunda migración amplía la paleta a doce colores y reserva un color diferente para cada asesor, incluso cuando esté inactivo. Si encuentra colores repetidos, conserva la asignación más antigua y distribuye automáticamente colores libres. Solo se detiene si existen más de doce asesores.
 
+Finalmente, ejecuta una sola vez `supabase/add-appointment-creators.sql` para que el detalle de cada cita pueda mostrar el nombre del usuario que la creó sin exponer otros datos de su perfil.
+
 ## 2. Crear el administrador inicial
 
 1. Entra en **Authentication > Users**.

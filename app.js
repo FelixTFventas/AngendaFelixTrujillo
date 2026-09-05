@@ -7,6 +7,7 @@ const statusLabel = { pending: 'Pendiente', confirmed: 'Confirmada', completed: 
 
 let appointments = [];
 let advisors = [];
+let appointmentCreators = new Map();
 let reservedAdvisorColors = new Set();
 let currentProfile = null;
 let currentUser = null;
@@ -138,6 +139,7 @@ async function startSession(user) {
   }
 
   currentProfile = profile;
+  appointmentCreators = new Map([[profile.id, profile.full_name]]);
   authView.hidden = true;
   appView.hidden = false;
   document.querySelector('#currentUserName').textContent = profile.full_name;
@@ -159,7 +161,7 @@ async function startSession(user) {
 }
 
 async function activateWorkspace() {
-  await Promise.all([loadAdvisors(), loadAppointments()]);
+  await Promise.all([loadAdvisors(), loadAppointments(), loadAppointmentCreators()]);
   setAdvisorOptions(advisorFilter, 'all', 'all', true);
   renderAdvisors();
   render();
@@ -169,6 +171,7 @@ async function activateWorkspace() {
 function showAuth(message = '') {
   currentProfile = null;
   currentUser = null;
+  appointmentCreators = new Map();
   appView.hidden = true;
   authView.hidden = false;
   loginMessage.textContent = message;
@@ -205,11 +208,22 @@ async function loadAppointments() {
   render();
 }
 
+async function loadAppointmentCreators() {
+  const { data, error } = await supabaseClient.rpc('list_appointment_creators');
+  if (error) {
+    appointmentCreators = new Map(currentProfile ? [[currentProfile.id, currentProfile.full_name]] : []);
+    showToast(readableError(error, 'No fue posible cargar los usuarios que crearon las citas.'));
+    return;
+  }
+  appointmentCreators = new Map((data || []).map(profile => [profile.id, profile.full_name]));
+  if (currentProfile) appointmentCreators.set(currentProfile.id, currentProfile.full_name);
+}
+
 function subscribeToAppointments() {
   if (appointmentsChannel) supabaseClient.removeChannel(appointmentsChannel);
   appointmentsChannel = supabaseClient
     .channel('appointments-live')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => loadAppointments())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => Promise.all([loadAppointments(), loadAppointmentCreators()]))
     .subscribe();
 }
 
@@ -362,6 +376,7 @@ function openDetails(id) {
   const status = statusLabel[appointment.status] ? appointment.status : 'pending';
   const formattedDate = capitalize(new Intl.DateTimeFormat('es', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(parseDate(appointment.date)));
   const formattedTime = formatTime(appointment.time);
+  const creatorName = appointmentCreators.get(appointment.createdBy) || 'Usuario no disponible';
   document.querySelector('#detailTitle').textContent = appointment.subject;
   document.querySelector('#detailSubtitle').textContent = `${teams[appointment.team] || 'Cita'} · ${formattedDate} a las ${formattedTime}`;
   document.querySelector('#detailContent').innerHTML = `<span class="detail-status ${status}">${statusLabel[status]}</span><div class="detail-grid">
@@ -370,6 +385,7 @@ function openDetails(id) {
     <div class="detail-item"><span class="detail-label">Asesor responsable</span><p class="detail-value advisor-inline advisor-color ${advisorColor(appointment.advisor, appointment.color)}">${escapeHTML(appointment.advisor || 'No registrado')}</p></div>
     <div class="detail-item"><span class="detail-label">Equipo</span><p class="detail-value">${escapeHTML(teams[appointment.team] || 'No registrado')}</p></div>
     <div class="detail-item"><span class="detail-label">Fecha y hora</span><p class="detail-value">${escapeHTML(formattedDate)}, ${escapeHTML(formattedTime)}</p></div>
+    <div class="detail-item"><span class="detail-label">Creada por</span><p class="detail-value">${escapeHTML(creatorName)}</p></div>
     <div class="detail-item full"><span class="detail-label">Inmueble o dirección</span><p class="detail-value">${escapeHTML(appointment.property || 'No registrado')}</p></div>
     <div class="detail-item full"><span class="detail-label">Notas</span><p class="detail-value detail-notes">${escapeHTML(appointment.notes || 'Sin notas adicionales.')}</p></div>
   </div>`;
