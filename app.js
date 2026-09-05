@@ -43,6 +43,13 @@ function dateKey(date) { return `${date.getFullYear()}-${String(date.getMonth() 
 function parseDate(value) { const [year, month, day] = value.split('-').map(Number); return new Date(year, month - 1, day); }
 function sameDay(first, second) { return dateKey(first) === dateKey(second); }
 function capitalize(value) { return value.charAt(0).toUpperCase() + value.slice(1); }
+function formatTime(value) {
+  const match = String(value || '').match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return String(value || '');
+  const hour = Number(match[1]);
+  if (hour > 23) return String(value || '');
+  return `${hour % 12 || 12}:${match[2]} ${hour < 12 ? 'a. m.' : 'p. m.'}`;
+}
 function moveMonth(date, amount) {
   const lastDay = new Date(date.getFullYear(), date.getMonth() + amount + 1, 0).getDate();
   return new Date(date.getFullYear(), date.getMonth() + amount, Math.min(date.getDate(), lastDay));
@@ -264,7 +271,7 @@ function renderWeek(filtered) {
       : events.length === 1 ? '<span class="day-dot"></span>' : '';
     return `<div class="${classes}" data-date="${key}">
       <button class="day-head" type="button" data-date="${key}" aria-label="${formattedDate}, ${appointmentLabel}" aria-pressed="${isSelected}"><span class="day-name">${capitalize(new Intl.DateTimeFormat('es', { weekday: 'short' }).format(day).replace('.', ''))}</span><span class="day-number">${day.getDate()}</span><span class="day-indicator" aria-hidden="true">${indicator}</span></button>
-      <div class="day-body">${events.map(event => `<button class="event ${event.team} advisor-color ${advisorColor(event.advisor, event.color)}" data-date="${event.date}" data-appointment-id="${event.id}"><time>${escapeHTML(event.time)}</time><strong>${escapeHTML(event.subject)}</strong><span>${escapeHTML(event.client)}</span></button>`).join('')}</div>
+      <div class="day-body">${events.map(event => `<button class="event ${event.team} advisor-color ${advisorColor(event.advisor, event.color)}" data-date="${event.date}" data-appointment-id="${event.id}"><time>${escapeHTML(formatTime(event.time))}</time><strong>${escapeHTML(event.subject)}</strong><span>${escapeHTML(event.client)}</span></button>`).join('')}</div>
     </div>`;
   }).join('');
   const first = days[0];
@@ -286,7 +293,7 @@ function renderMonth(filtered) {
     const events = filtered.filter(appointment => appointment.date === key).sort((a, b) => a.time.localeCompare(b.time));
     const classes = ['month-day', day.getMonth() !== cursorDate.getMonth() ? 'outside' : '', sameDay(day, startOfDay(new Date())) ? 'today' : '', sameDay(day, selectedDate) ? 'selected' : ''].filter(Boolean).join(' ');
     return `<div class="${classes}" data-date="${key}"><span class="month-day-number">${day.getDate()}</span>
-      ${events.slice(0, 3).map(event => `<button class="month-event ${event.team} advisor-color ${advisorColor(event.advisor, event.color)}" data-date="${event.date}" data-appointment-id="${event.id}" title="${escapeHTML(`${event.time} · ${event.subject} · ${event.client}`)}">${escapeHTML(event.time)} · ${escapeHTML(event.subject)}</button>`).join('')}
+      ${events.slice(0, 3).map(event => `<button class="month-event ${event.team} advisor-color ${advisorColor(event.advisor, event.color)}" data-date="${event.date}" data-appointment-id="${event.id}" title="${escapeHTML(`${formatTime(event.time)} · ${event.subject} · ${event.client}`)}">${escapeHTML(formatTime(event.time))} · ${escapeHTML(event.subject)}</button>`).join('')}
       ${events.length > 3 ? `<span class="more-events">+${events.length - 3} citas</span>` : ''}</div>`;
   }).join('')}`;
   periodLabel.textContent = capitalize(new Intl.DateTimeFormat('es', { month: 'long', year: 'numeric' }).format(cursorDate));
@@ -296,7 +303,7 @@ function renderAgenda(filtered) {
   const key = dateKey(selectedDate);
   const selectedEvents = filtered.filter(appointment => appointment.date === key).sort((a, b) => a.time.localeCompare(b.time));
   dayLabel.textContent = capitalize(new Intl.DateTimeFormat('es', { weekday: 'long', day: 'numeric', month: 'long' }).format(selectedDate));
-  agenda.innerHTML = selectedEvents.length ? selectedEvents.map((event, index) => `<li class="agenda-item"><button class="agenda-item-button advisor-color ${advisorColor(event.advisor, event.color)}" type="button" data-appointment-id="${event.id}"><span class="agenda-time">${escapeHTML(event.time)}<span>${teams[event.team]}</span></span><span class="agenda-copy"><strong>${escapeHTML(event.subject)}</strong><span>${escapeHTML(event.client)}</span><span class="meta"><span class="mini-avatar">${initials(event.advisor)}</span>${escapeHTML(event.advisor)} · ${teams[event.team]}</span></span></button></li>`).join('') : '<li class="empty">No hay citas para esta fecha y filtros seleccionados.</li>';
+  agenda.innerHTML = selectedEvents.length ? selectedEvents.map((event, index) => `<li class="agenda-item"><button class="agenda-item-button advisor-color ${advisorColor(event.advisor, event.color)}" type="button" data-appointment-id="${event.id}"><span class="agenda-time">${escapeHTML(formatTime(event.time))}<span>${teams[event.team]}</span></span><span class="agenda-copy"><strong>${escapeHTML(event.subject)}</strong><span>${escapeHTML(event.client)}</span><span class="meta"><span class="mini-avatar">${initials(event.advisor)}</span>${escapeHTML(event.advisor)} · ${teams[event.team]}</span></span></button></li>`).join('') : '<li class="empty">No hay citas para esta fecha y filtros seleccionados.</li>';
 }
 
 function render() {
@@ -354,21 +361,22 @@ function openDetails(id) {
   activeAppointmentId = id;
   const status = statusLabel[appointment.status] ? appointment.status : 'pending';
   const formattedDate = capitalize(new Intl.DateTimeFormat('es', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(parseDate(appointment.date)));
+  const formattedTime = formatTime(appointment.time);
   document.querySelector('#detailTitle').textContent = appointment.subject;
-  document.querySelector('#detailSubtitle').textContent = `${teams[appointment.team] || 'Cita'} · ${formattedDate} a las ${appointment.time}`;
+  document.querySelector('#detailSubtitle').textContent = `${teams[appointment.team] || 'Cita'} · ${formattedDate} a las ${formattedTime}`;
   document.querySelector('#detailContent').innerHTML = `<span class="detail-status ${status}">${statusLabel[status]}</span><div class="detail-grid">
     <div class="detail-item"><span class="detail-label">Cliente</span><p class="detail-value">${escapeHTML(appointment.client || 'No registrado')}</p></div>
     <div class="detail-item"><span class="detail-label">Teléfono</span><p class="detail-value">${escapeHTML(appointment.phone || 'No registrado')}</p></div>
     <div class="detail-item"><span class="detail-label">Asesor responsable</span><p class="detail-value advisor-inline advisor-color ${advisorColor(appointment.advisor, appointment.color)}">${escapeHTML(appointment.advisor || 'No registrado')}</p></div>
     <div class="detail-item"><span class="detail-label">Equipo</span><p class="detail-value">${escapeHTML(teams[appointment.team] || 'No registrado')}</p></div>
-    <div class="detail-item"><span class="detail-label">Fecha y hora</span><p class="detail-value">${escapeHTML(formattedDate)}, ${escapeHTML(appointment.time)}</p></div>
+    <div class="detail-item"><span class="detail-label">Fecha y hora</span><p class="detail-value">${escapeHTML(formattedDate)}, ${escapeHTML(formattedTime)}</p></div>
     <div class="detail-item full"><span class="detail-label">Inmueble o dirección</span><p class="detail-value">${escapeHTML(appointment.property || 'No registrado')}</p></div>
     <div class="detail-item full"><span class="detail-label">Notas</span><p class="detail-value detail-notes">${escapeHTML(appointment.notes || 'Sin notas adicionales.')}</p></div>
   </div>`;
   const phone = String(appointment.phone || '').replace(/\D/g, '');
   const whatsapp = document.querySelector('#whatsappAppointment');
   whatsapp.hidden = !phone;
-  if (phone) whatsapp.href = `https://wa.me/${phone}?text=${encodeURIComponent(`Hola ${appointment.client}, te contacto para confirmar la cita de ${appointment.subject} el ${formattedDate} a las ${appointment.time}.`)}`;
+  if (phone) whatsapp.href = `https://wa.me/${phone}?text=${encodeURIComponent(`Hola ${appointment.client}, te contacto para confirmar la cita de ${appointment.subject} el ${formattedDate} a las ${formattedTime}.`)}`;
   document.querySelector('#editAppointment').hidden = !canManageAppointment(appointment);
   document.querySelector('#deleteAppointment').hidden = !canDeleteAppointment(appointment);
   detailDialog.showModal();
