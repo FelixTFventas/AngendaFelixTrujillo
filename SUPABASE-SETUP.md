@@ -17,6 +17,8 @@ Después, ejecuta una sola vez `supabase/expand-unique-advisor-colors.sql`. Esta
 
 Finalmente, ejecuta una sola vez `supabase/add-appointment-creators.sql` para que el detalle de cada cita pueda mostrar el nombre del usuario que la creó sin exponer otros datos de su perfil.
 
+Para activar el dashboard en un proyecto existente, ejecuta también `supabase/add-appointment-dashboard.sql` en **SQL Editor**. No requiere nuevas Edge Functions. Las instalaciones nuevas ya incluyen esta función en `supabase/schema.sql`.
+
 ## 2. Crear el administrador inicial
 
 1. Entra en **Authentication > Users**.
@@ -81,3 +83,21 @@ La paleta disponible es Ámbar, Turquesa, Azul, Violeta, Coral, Esmeralda, Índi
 - El administrador gestiona usuarios y tiene control completo sobre las citas.
 - Solo el administrador crea y activa o desactiva asesores sin acceso.
 - Nadie puede consultar la agenda hasta cambiar su contraseña temporal.
+- Solo el administrador y la supervisora pueden abrir el dashboard y ejecutar su consulta de indicadores. La capacidad de gestionar citas de un equipo no concede acceso al dashboard.
+
+## Dashboard de citas
+
+- Disponible en escritorio y celular para los roles `admin` y `supervisor`.
+- Permite seleccionar semana (lunes a domingo) o mes calendario, equipo y asesor.
+- Muestra únicamente asesor, equipo, total de citas y citas realizadas; incluye un resumen separado de Arrendamientos y Ventas.
+- El total incluye todos los estados, también las canceladas. Las realizadas son únicamente las citas con estado `completed`.
+- Se usa la fecha de la cita, no la de creación, y el asesor asignado, no el usuario que la registró.
+- Los asesores activos aparecen con cero aunque no tengan citas. Los inactivos aparecen cuando tienen citas en el periodo.
+- El equipo se toma del registro de la cita, para respetar el equipo guardado en el historial. Si un asesor tiene citas en ambos equipos, aparece una fila por equipo.
+- Los indicadores se calculan en Supabase, sin depender del límite de citas descargadas por la agenda, y se actualizan al recibir cambios de citas en tiempo real.
+- Las citas eliminadas definitivamente no forman parte de las estadísticas.
+- Los permisos de lectura de la agenda no cambian: todos los usuarios activos siguen consultando las citas. La restricción adicional se aplica a la pestaña y a la función de indicadores.
+
+### Pruebas locales
+
+Con Node.js instalado, ejecuta `npm ci` y después `npm test`. Las pruebas comprueban periodos, filtros, acceso por rol, actualización de la interfaz y la función SQL en un PostgreSQL local en memoria. No se conectan al proyecto de Supabase ni modifican datos reales. Las dependencias de pruebas no son necesarias para publicar la aplicación estática.

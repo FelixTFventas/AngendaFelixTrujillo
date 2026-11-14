@@ -33,6 +33,7 @@
       --shadow: 0 14px 40px oklch(22% 0.02 240 / .1);
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body { margin: 0; background: var(--bg); color: var(--fg); font: 400 15px/1.5 var(--font-body); }
     button, input, select, textarea { font: inherit; }
     button { color: inherit; }
@@ -155,6 +156,39 @@
     .advisor-color .mini-avatar { background: var(--advisor-bg); border-color: var(--advisor-fg); color: var(--advisor-fg); }
     .empty { padding: 28px 18px; text-align: center; color: var(--muted); font-size: 13px; }
     .advisors-view { max-width: 1120px; }
+    .dashboard-view { max-width: 1280px; }
+    .dashboard-intro { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+    .dashboard-toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 14px; margin-bottom: 18px; padding: 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+    .dashboard-period { flex: 1 1 290px; }
+    .dashboard-period h2 { margin: 0 0 10px; font-size: 17px; letter-spacing: -.01em; }
+    .dashboard-date-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+    .dashboard-toolbar > .field { flex: 1 1 150px; }
+    .dashboard-toolbar select { width: 100%; min-width: 0; }
+    .dashboard-teams { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 18px; }
+    .dashboard-team { padding: 22px 24px; border: 1px solid var(--border); border-top: 3px solid var(--info-fg); border-radius: 14px; background: var(--surface); }
+    .dashboard-team.rental { border-top-color: var(--warn-fg); }
+    .dashboard-team h2 { margin: 0 0 22px; font-size: 19px; letter-spacing: -.01em; }
+    .dashboard-counts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 0; }
+    .dashboard-counts > div + div { border-left: 1px solid var(--border); padding-left: 20px; }
+    .dashboard-counts dt { color: var(--muted); font-size: 12px; }
+    .dashboard-counts dd { margin: 5px 0 0; font: 600 clamp(30px, 4vw, 42px)/1.2 var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -.04em; }
+    .dashboard-counts .completed { color: var(--success-fg); }
+    .dashboard-table-scroll { overflow-x: auto; }
+    .dashboard-table { width: 100%; border-collapse: collapse; text-align: left; }
+    .dashboard-table caption { padding: 14px 20px; color: var(--muted); font-size: 12px; text-align: left; caption-side: bottom; }
+    .dashboard-table th, .dashboard-table td { padding: 15px 20px; border-bottom: 1px solid var(--border); }
+    .dashboard-table thead { background: var(--bg); color: var(--muted); font-size: 12px; }
+    .dashboard-table tbody th { font-size: 14px; font-weight: 550; }
+    .dashboard-table td { font-size: 13px; }
+    .dashboard-table .numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .dashboard-table tbody td.numeric { font-family: var(--font-mono); }
+    .dashboard-table tfoot { background: var(--bg); font-size: 13px; }
+    .dashboard-table tfoot th, .dashboard-table tfoot td { border-bottom: 0; }
+    .dashboard-status { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+    .dashboard-status.error { color: var(--danger); }
+    .dashboard-retry { margin-bottom: 16px; }
+    .dashboard-note { margin: 14px 0 0; color: var(--muted); font-size: 12px; }
+    .dashboard-inactive { color: var(--muted); font-size: 11px; font-weight: 400; }
     .admin-view { max-width: 1280px; }
     .admin-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 18px; align-items: start; }
     .admin-layout + .admin-layout { margin-top: 18px; }
@@ -306,6 +340,12 @@
       .external-advisor-row .role-badge { grid-column: 1; grid-row: 2; }
       .external-advisor-row .external-advisor-toggle { grid-column: 2; grid-row: 1 / 3; }
       .toast { left: 14px; right: 14px; bottom: 82px; }
+      .dashboard-view .page-head { flex-wrap: wrap; }
+      .dashboard-toolbar { padding: 14px; gap: 12px; }
+      .dashboard-period { flex-basis: 100%; }
+      .dashboard-teams { grid-template-columns: 1fr; gap: 12px; }
+      .dashboard-team { padding: 18px; }
+      .dashboard-table th, .dashboard-table td { padding: 12px; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
@@ -338,7 +378,7 @@
         <span class="brand-name">FELIX TRUJILLO FALLA</span>
       </div>
       <nav class="topnav" aria-label="Navegación principal">
-        <button class="nav-item active" data-section="agenda">Agenda</button><button class="nav-item" data-section="advisors">Asesores</button><button class="nav-item admin-only" data-section="admin" hidden>Usuarios</button>
+        <button class="nav-item active" data-section="agenda">Agenda</button><button class="nav-item" data-section="advisors">Asesores</button><button class="nav-item dashboard-only" data-section="dashboard" hidden>Dashboard</button><button class="nav-item admin-only" data-section="admin" hidden>Usuarios</button>
       </nav>
       <div class="top-actions">
         <button class="primary" id="newAppointment" data-od-id="new-appointment-button">Nueva cita</button>
@@ -381,6 +421,43 @@
       <div id="advisorsByTeam" aria-label="Lista de asesores por equipo"></div>
     </main>
 
+    <main class="dashboard-view" id="dashboardView" hidden>
+      <section class="page-head">
+        <div><p class="eyebrow">Seguimiento comercial</p><h1>Dashboard de citas</h1><p class="dashboard-intro">Resultados por equipo y asesor, en un solo lugar.</p></div>
+        <div class="segmented" id="dashboardPeriodSwitcher" role="group" aria-label="Periodo del dashboard"><button class="active" data-period="week" aria-pressed="true">Semana</button><button data-period="month" aria-pressed="false">Mes</button></div>
+      </section>
+      <section class="dashboard-toolbar" aria-label="Filtros del dashboard">
+        <div class="dashboard-period">
+          <h2 id="dashboardPeriodLabel"></h2>
+          <div class="dashboard-date-tools">
+            <button class="ghost icon-only" id="dashboardPrevious" aria-label="Semana anterior">‹</button>
+            <button class="ghost icon-only" id="dashboardNext" aria-label="Semana siguiente">›</button>
+            <button class="ghost" id="dashboardToday">Hoy</button>
+          </div>
+        </div>
+        <div class="field"><label for="dashboardDate" id="dashboardDateLabel">Fecha de la semana</label><input id="dashboardDate" type="date"></div>
+        <div class="field"><label for="dashboardTeam">Equipo</label><select id="dashboardTeam"><option value="all">Todos</option><option value="rental">Arrendamientos</option><option value="sales">Ventas</option></select></div>
+        <div class="field"><label for="dashboardAdvisor">Asesor</label><select id="dashboardAdvisor"><option value="all">Todos</option></select></div>
+      </section>
+      <p class="dashboard-status" id="dashboardStatus" role="status" aria-live="polite"></p>
+      <button class="ghost dashboard-retry" id="dashboardRetry" hidden>Volver a intentar</button>
+      <div id="dashboardResults" aria-busy="false">
+        <section class="dashboard-teams" id="dashboardTeams" aria-label="Indicadores por equipo"></section>
+        <section class="admin-card" aria-labelledby="dashboardAdvisorsTitle">
+          <div class="admin-card-head"><h2 id="dashboardAdvisorsTitle">Resultados por asesor</h2><p id="dashboardTableDescription">Citas del periodo y filtros seleccionados.</p></div>
+          <div class="dashboard-table-scroll" role="region" aria-label="Resultados por asesor" tabindex="0">
+            <table class="dashboard-table" aria-describedby="dashboardTableDescription">
+              <caption>Asignadas al asesor responsable y contadas por la fecha de la cita.</caption>
+              <thead><tr><th scope="col">Asesor</th><th scope="col">Equipo</th><th scope="col" class="numeric">Total de citas</th><th scope="col" class="numeric">Citas realizadas</th></tr></thead>
+              <tbody id="dashboardRows"></tbody>
+              <tfoot id="dashboardTotals"></tfoot>
+            </table>
+          </div>
+        </section>
+      </div>
+      <p class="dashboard-note">El total incluye todos los estados, también las canceladas. Solo las citas marcadas como “Realizada” cuentan como realizadas. Las citas eliminadas no se incluyen.</p>
+    </main>
+
     <main class="admin-view" id="adminView" hidden>
       <section class="page-head"><div><p class="eyebrow">Administración</p><h1>Usuarios</h1></div></section>
       <div class="admin-layout">
@@ -420,7 +497,7 @@
       </div>
     </main>
 
-    <nav class="mobile-nav" aria-label="Navegación móvil"><button class="active" data-section="agenda">Agenda</button><button data-section="advisors">Asesores</button><button class="admin-only" data-section="admin" hidden>Usuarios</button></nav>
+    <nav class="mobile-nav" aria-label="Navegación móvil"><button class="active" data-section="agenda">Agenda</button><button data-section="advisors">Asesores</button><button class="dashboard-only" data-section="dashboard" hidden>Dashboard</button><button class="admin-only" data-section="admin" hidden>Usuarios</button></nav>
   </div>
 
   <dialog id="appointmentDialog" data-od-id="appointment-dialog">
@@ -793,6 +870,7 @@
   </script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="supabase-config.js"></script>
+  <script src="dashboard.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

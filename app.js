@@ -16,6 +16,11 @@ let currentView = 'week';
 let cursorDate = startOfDay(new Date());
 let selectedDate = new Date(cursorDate);
 let activeAppointmentId = null;
+let dashboardMode = 'week';
+let dashboardDate = startOfDay(new Date());
+let dashboardData = [];
+let dashboardRequest = 0;
+let dashboardLoaded = false;
 
 const authView = document.querySelector('#authView');
 const appView = document.querySelector('#appView');
@@ -34,6 +39,9 @@ const appointmentForm = document.querySelector('#appointmentForm');
 const agendaView = document.querySelector('#agendaView');
 const advisorsView = document.querySelector('#advisorsView');
 const adminView = document.querySelector('#adminView');
+const dashboardView = document.querySelector('#dashboardView');
+const dashboardTeam = document.querySelector('#dashboardTeam');
+const dashboardAdvisor = document.querySelector('#dashboardAdvisor');
 const periodLabel = document.querySelector('#periodLabel');
 const dayLabel = document.querySelector('#dayLabel');
 
@@ -121,6 +129,7 @@ function mapAppointment(row) {
 }
 
 async function startSession(user) {
+  resetDashboard();
   currentUser = user;
   const { data: profile, error } = await supabaseClient.from('profiles').select('*').eq('id', user.id).single();
   if (error || !profile) {
@@ -147,6 +156,7 @@ async function startSession(user) {
   document.querySelector('#logoutButton').textContent = initials(profile.full_name);
   document.querySelector('#logoutButton').setAttribute('aria-label', `Cerrar sesión de ${profile.full_name}`);
   document.querySelectorAll('.admin-only').forEach(control => { control.hidden = profile.role !== 'admin'; });
+  document.querySelectorAll('.dashboard-only').forEach(control => { control.hidden = !window.AppointmentDashboard.canView(profile); });
 
   showSection('agenda');
   if (profile.must_change_password) {
@@ -161,6 +171,7 @@ async function startSession(user) {
 }
 
 async function activateWorkspace() {
+  document.querySelectorAll('.dashboard-only').forEach(control => { control.hidden = !window.AppointmentDashboard.canView(currentProfile); });
   await Promise.all([loadAdvisors(), loadAppointments(), loadAppointmentCreators()]);
   setAdvisorOptions(advisorFilter, 'all', 'all', true);
   renderAdvisors();
@@ -169,6 +180,7 @@ async function activateWorkspace() {
 }
 
 function showAuth(message = '') {
+  resetDashboard();
   currentProfile = null;
   currentUser = null;
   appointmentCreators = new Map();
@@ -206,6 +218,7 @@ async function loadAppointments() {
   }
   appointments = (data || []).map(mapAppointment);
   render();
+  invalidateDashboard();
 }
 
 async function loadAppointmentCreators() {
@@ -256,6 +269,7 @@ function refreshAdvisorUI(selectedAdvisor = advisorFilter.value) {
   setAdvisorOptions(advisorFilter, teamFilter.value, selectedAdvisor, true);
   renderAdvisors();
   render();
+  invalidateDashboard();
 }
 
 function renderAdvisors() {
@@ -325,6 +339,127 @@ function render() {
   const filtered = filteredAppointments();
   if (currentView === 'month') renderMonth(filtered); else renderWeek(filtered);
   renderAgenda(filtered);
+}
+
+function resetDashboard() {
+  dashboardRequest += 1;
+  dashboardData = [];
+  dashboardLoaded = false;
+  dashboardMode = 'week';
+  dashboardDate = startOfDay(new Date());
+  dashboardView.hidden = true;
+  dashboardTeam.value = 'all';
+  dashboardAdvisor.innerHTML = '<option value="all">Todos</option>';
+  document.querySelectorAll('.dashboard-only').forEach(control => { control.hidden = true; });
+  document.querySelector('#dashboardTeams').replaceChildren();
+  document.querySelector('#dashboardRows').replaceChildren();
+  document.querySelector('#dashboardTotals').replaceChildren();
+  document.querySelector('#dashboardStatus').textContent = '';
+  document.querySelector('#dashboardRetry').hidden = true;
+  document.querySelector('#dashboardResults').setAttribute('aria-busy', 'false');
+}
+
+function updateDashboardPeriod() {
+  const { start, end } = window.AppointmentDashboard.period(dashboardDate, dashboardMode);
+  const first = parseDate(start);
+  const last = addDays(parseDate(end), -1);
+  const format = new Intl.DateTimeFormat('es', { day: 'numeric', month: 'short', year: 'numeric' });
+  document.querySelector('#dashboardPeriodLabel').textContent = dashboardMode === 'month'
+    ? capitalize(new Intl.DateTimeFormat('es', { month: 'long', year: 'numeric' }).format(first))
+    : `${format.format(first)} – ${format.format(last)}`;
+  const input = document.querySelector('#dashboardDate');
+  input.type = dashboardMode === 'month' ? 'month' : 'date';
+  input.value = dashboardMode === 'month' ? start.slice(0, 7) : dateKey(dashboardDate);
+  document.querySelector('#dashboardDateLabel').textContent = dashboardMode === 'month' ? 'Mes' : 'Fecha de la semana';
+  document.querySelector('#dashboardPrevious').setAttribute('aria-label', dashboardMode === 'month' ? 'Mes anterior' : 'Semana anterior');
+  document.querySelector('#dashboardNext').setAttribute('aria-label', dashboardMode === 'month' ? 'Mes siguiente' : 'Semana siguiente');
+  document.querySelectorAll('#dashboardPeriodSwitcher button').forEach(button => {
+    const active = button.dataset.period === dashboardMode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+}
+
+function updateDashboardAdvisorOptions() {
+  const selected = dashboardAdvisor.value;
+  const available = new Map();
+  window.AppointmentDashboard.filterRows(dashboardData, dashboardTeam.value).forEach(row => {
+    available.set(row.advisor_id, row);
+  });
+  const sorted = [...available.values()].sort((a, b) => a.advisor_name.localeCompare(b.advisor_name, 'es'));
+  dashboardAdvisor.innerHTML = '<option value="all">Todos</option>' + sorted.map(row =>
+    `<option value="${escapeHTML(row.advisor_id)}">${escapeHTML(row.advisor_name)}${row.active ? '' : ' (inactivo)'}</option>`).join('');
+  if (available.has(selected)) dashboardAdvisor.value = selected;
+}
+
+function renderDashboard() {
+  if (!window.AppointmentDashboard.canView(currentProfile)) return;
+  const { filterRows, totals } = window.AppointmentDashboard;
+  const rows = filterRows(dashboardData, dashboardTeam.value, dashboardAdvisor.value);
+  const number = value => new Intl.NumberFormat('es-CO').format(value);
+  document.querySelector('#dashboardTeams').innerHTML = Object.entries(teams)
+    .filter(([team]) => dashboardTeam.value === 'all' || dashboardTeam.value === team)
+    .map(([team, label]) => {
+      const counts = totals(filterRows(rows, team));
+      return `<article class="dashboard-team ${team}"><h2>${label}</h2><dl class="dashboard-counts"><div><dt>Total de citas</dt><dd>${dashboardLoaded ? number(counts.total) : '—'}</dd></div><div><dt>Citas realizadas</dt><dd class="completed">${dashboardLoaded ? number(counts.completed) : '—'}</dd></div></dl></article>`;
+    }).join('');
+  const sorted = [...rows].sort((a, b) => a.team.localeCompare(b.team) || a.advisor_name.localeCompare(b.advisor_name, 'es'));
+  document.querySelector('#dashboardRows').innerHTML = dashboardLoaded
+    ? sorted.length ? sorted.map(row => `<tr><th scope="row">${escapeHTML(row.advisor_name)}${row.active ? '' : ' <span class="dashboard-inactive">(inactivo)</span>'}</th><td>${escapeHTML(teams[row.team] || row.team)}</td><td class="numeric">${number(row.total)}</td><td class="numeric">${number(row.completed)}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="empty">No hay asesores para este periodo y filtros.</td></tr>'
+    : '<tr><td colspan="4" class="empty">Sin datos disponibles.</td></tr>';
+  const counts = totals(rows);
+  document.querySelector('#dashboardTotals').innerHTML = dashboardLoaded
+    ? `<tr><th scope="row" colspan="2">Total seleccionado</th><td class="numeric">${number(counts.total)}</td><td class="numeric">${number(counts.completed)}</td></tr>` : '';
+  if (dashboardLoaded) {
+    document.querySelector('#dashboardStatus').textContent = counts.total
+      ? 'Indicadores actualizados para el periodo y filtros seleccionados.'
+      : 'No hay citas en el periodo y filtros seleccionados.';
+  }
+}
+
+async function loadDashboard() {
+  if (!window.AppointmentDashboard.canView(currentProfile)) return;
+  const request = ++dashboardRequest;
+  const { start, end } = window.AppointmentDashboard.period(dashboardDate, dashboardMode);
+  dashboardData = [];
+  dashboardLoaded = false;
+  updateDashboardPeriod();
+  renderDashboard();
+  const status = document.querySelector('#dashboardStatus');
+  status.classList.remove('error');
+  status.textContent = 'Cargando indicadores…';
+  document.querySelector('#dashboardRetry').hidden = true;
+  document.querySelector('#dashboardResults').setAttribute('aria-busy', 'true');
+  try {
+    const { data, error } = await supabaseClient.rpc('appointment_dashboard', { period_start: start, period_end: end });
+    if (request !== dashboardRequest || !window.AppointmentDashboard.canView(currentProfile)) return;
+    if (error) throw error;
+    dashboardData = data || [];
+    dashboardLoaded = true;
+    updateDashboardAdvisorOptions();
+    renderDashboard();
+  } catch (error) {
+    if (request !== dashboardRequest || !window.AppointmentDashboard.canView(currentProfile)) return;
+    const missingFunction = ['PGRST202', '42883'].includes(error?.code);
+    status.textContent = missingFunction
+      ? 'Falta activar el dashboard en Supabase. Ejecuta supabase/add-appointment-dashboard.sql en SQL Editor.'
+      : readableError(error, 'No fue posible cargar los indicadores.');
+    status.classList.add('error');
+    document.querySelector('#dashboardRetry').hidden = false;
+  } finally {
+    if (request === dashboardRequest) document.querySelector('#dashboardResults').setAttribute('aria-busy', 'false');
+  }
+}
+
+function invalidateDashboard() {
+  if (!dashboardView.hidden && window.AppointmentDashboard.canView(currentProfile)) loadDashboard();
+}
+
+function navigateDashboard(amount) {
+  dashboardDate = dashboardMode === 'month'
+    ? moveMonth(dashboardDate, amount) : addDays(dashboardDate, amount * 7);
+  loadDashboard();
 }
 
 function openAppointmentDialog(appointment = null) {
@@ -453,6 +588,7 @@ async function saveAppointment(event) {
   cursorDate = new Date(selectedDate);
   appointmentDialog.close();
   render();
+  invalidateDashboard();
   showToast(existingId ? 'Los cambios fueron guardados.' : 'La cita quedó guardada en la agenda.');
 }
 
@@ -468,14 +604,17 @@ async function deleteAppointment() {
   detailDialog.close();
   activeAppointmentId = null;
   render();
+  invalidateDashboard();
   showToast('La cita fue eliminada.');
 }
 
 function showSection(section) {
   if (section === 'admin' && currentProfile?.role !== 'admin') section = 'agenda';
+  if (section === 'dashboard' && !window.AppointmentDashboard.canView(currentProfile)) section = 'agenda';
   agendaView.hidden = section !== 'agenda';
   advisorsView.hidden = section !== 'advisors';
   adminView.hidden = section !== 'admin';
+  dashboardView.hidden = section !== 'dashboard';
   document.querySelectorAll('[data-section]').forEach(button => {
     const active = button.dataset.section === section;
     button.classList.toggle('active', active);
@@ -485,6 +624,7 @@ function showSection(section) {
     loadUsers();
     loadExternalAdvisors();
   }
+  if (section === 'dashboard') loadDashboard();
 }
 
 async function loadUsers() {
@@ -772,6 +912,24 @@ document.querySelector('#deleteAppointment').addEventListener('click', deleteApp
 passwordDialog.addEventListener('cancel', event => event.preventDefault());
 document.querySelector('#passwordForm').addEventListener('submit', changePassword);
 document.querySelectorAll('[data-section]').forEach(button => button.addEventListener('click', () => showSection(button.dataset.section)));
+document.querySelectorAll('#dashboardPeriodSwitcher button').forEach(button => button.addEventListener('click', () => {
+  dashboardMode = button.dataset.period;
+  loadDashboard();
+}));
+document.querySelector('#dashboardPrevious').addEventListener('click', () => navigateDashboard(-1));
+document.querySelector('#dashboardNext').addEventListener('click', () => navigateDashboard(1));
+document.querySelector('#dashboardToday').addEventListener('click', () => {
+  dashboardDate = startOfDay(new Date());
+  loadDashboard();
+});
+document.querySelector('#dashboardDate').addEventListener('change', event => {
+  if (!event.target.value || !event.target.validity.valid) return;
+  dashboardDate = parseDate(dashboardMode === 'month' ? `${event.target.value}-01` : event.target.value);
+  loadDashboard();
+});
+dashboardTeam.addEventListener('change', () => { updateDashboardAdvisorOptions(); renderDashboard(); });
+dashboardAdvisor.addEventListener('change', renderDashboard);
+document.querySelector('#dashboardRetry').addEventListener('click', loadDashboard);
 document.querySelector('#advisorsByTeam').addEventListener('click', event => {
   const card = event.target.closest('[data-advisor-id]');
   if (!card) return;

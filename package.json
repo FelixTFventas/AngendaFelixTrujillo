@@ -1,0 +1,11 @@
+{
+  "name": "agenda-felix-trujillo",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "jsdom": "^29.1.1"
+  }
+}
