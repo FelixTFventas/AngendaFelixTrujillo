@@ -44,6 +44,11 @@ const dashboardTeam = document.querySelector('#dashboardTeam');
 const dashboardAdvisor = document.querySelector('#dashboardAdvisor');
 const periodLabel = document.querySelector('#periodLabel');
 const dayLabel = document.querySelector('#dayLabel');
+const propertyPicker = new window.SimiPropertyPicker({
+  client: supabaseClient,
+  form: appointmentForm,
+  getContext: () => ({ subject: appointmentForm.elements.subject.value, team: formTeam.value, profile: currentProfile }),
+});
 
 function startOfDay(date) { return new Date(date.getFullYear(), date.getMonth(), date.getDate()); }
 function addDays(date, amount) { const result = new Date(date); result.setDate(result.getDate() + amount); return result; }
@@ -118,6 +123,8 @@ function mapAppointment(row) {
     phone: row.phone || '',
     property: row.property || '',
     captureSource: row.capture_source || '',
+    simiPropertyCode: row.simi_property_code || null,
+    simiPropertyURL: row.simi_property_url || '',
     status: row.status,
     notes: row.notes || '',
     advisorId: row.advisor_id,
@@ -130,6 +137,7 @@ function mapAppointment(row) {
 }
 
 async function startSession(user) {
+  propertyPicker.reset();
   resetDashboard();
   currentUser = user;
   const { data: profile, error } = await supabaseClient.from('profiles').select('*').eq('id', user.id).single();
@@ -181,6 +189,7 @@ async function activateWorkspace() {
 }
 
 function showAuth(message = '') {
+  propertyPicker.reset();
   resetDashboard();
   currentProfile = null;
   currentUser = null;
@@ -528,6 +537,7 @@ function openAppointmentDialog(appointment = null) {
   formTeam.disabled = !isGlobalAppointmentManager();
   appointmentForm.elements.status.disabled = !canAssignAppointments();
   updateCaptureSourceRequirement(appointment);
+  propertyPicker.open(appointment);
   appointmentDialog.showModal();
   appointmentForm.elements.subject.focus();
 }
@@ -540,6 +550,7 @@ function openDetails(id) {
   const formattedDate = capitalize(new Intl.DateTimeFormat('es', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(parseDate(appointment.date)));
   const formattedTime = formatTime(appointment.time);
   const creatorName = appointmentCreators.get(appointment.createdBy) || 'Usuario no disponible';
+  const propertyURL = window.SimiPropertyPicker.safeURL(appointment.simiPropertyURL);
   document.querySelector('#detailTitle').textContent = appointment.subject;
   document.querySelector('#detailSubtitle').textContent = `${teams[appointment.team] || 'Cita'} · ${formattedDate} a las ${formattedTime}`;
   document.querySelector('#detailContent').innerHTML = `<span class="detail-status ${status}">${statusLabel[status]}</span><div class="detail-grid">
@@ -549,7 +560,7 @@ function openDetails(id) {
     <div class="detail-item"><span class="detail-label">Equipo</span><p class="detail-value">${escapeHTML(teams[appointment.team] || 'No registrado')}</p></div>
     <div class="detail-item"><span class="detail-label">Fecha y hora</span><p class="detail-value">${escapeHTML(formattedDate)}, ${escapeHTML(formattedTime)}</p></div>
     <div class="detail-item"><span class="detail-label">Creada por</span><p class="detail-value">${escapeHTML(creatorName)}</p></div>
-    <div class="detail-item full"><span class="detail-label">Inmueble o dirección</span><p class="detail-value">${escapeHTML(appointment.property || 'No registrado')}</p></div>
+    <div class="detail-item full"><span class="detail-label">Inmueble o dirección</span><p class="detail-value">${escapeHTML(appointment.property || 'No registrado')}</p>${propertyURL ? `<a class="action-link" href="${escapeHTML(propertyURL)}" target="_blank" rel="noopener noreferrer">Ver inmueble ${escapeHTML(appointment.simiPropertyCode)}</a>` : ''}</div>
     <div class="detail-item full"><span class="detail-label">Captado</span><p class="detail-value">${escapeHTML(appointment.captureSource || 'Sin registrar')}</p></div>
     <div class="detail-item full"><span class="detail-label">Notas</span><p class="detail-value detail-notes">${escapeHTML(appointment.notes || 'Sin notas adicionales.')}</p></div>
   </div>`;
@@ -610,6 +621,11 @@ async function saveAppointment(event) {
     showToast(`Solo puedes gestionar citas de ${teams[currentProfile.team]}.`);
     return;
   }
+  const selectedProperty = propertyPicker.snapshot();
+  if (selectedProperty || existing?.simiPropertyCode) {
+    payload.simi_property_code = selectedProperty?.code || null;
+    payload.simi_property_url = selectedProperty?.url || null;
+  }
 
   setBusy(appointmentForm, true);
   const query = existingId
@@ -618,6 +634,10 @@ async function saveAppointment(event) {
   const { data, error } = await query.select().single();
   setBusy(appointmentForm, false);
   if (error) {
+    if (['PGRST204', '42703'].includes(error.code) && /simi_property_(code|url)/i.test(error.message || '')) {
+      showToast('Falta ejecutar supabase/add-simi-property-catalog.sql. Tu formulario se conserva; también puedes usar la dirección manual.');
+      return;
+    }
     const missingCaptureSource = ['PGRST204', '42703'].includes(error.code) && /capture_source/i.test(error.message || '');
     showToast(missingCaptureSource
       ? 'Falta activar Captado en Supabase. Sigue los dos scripts de captación indicados en SUPABASE-SETUP.md.'
@@ -985,8 +1005,8 @@ document.querySelector('#advisorsByTeam').addEventListener('click', event => {
 });
 teamFilter.addEventListener('change', () => { setAdvisorOptions(advisorFilter, teamFilter.value, 'all', true); render(); });
 advisorFilter.addEventListener('change', render);
-formTeam.addEventListener('change', () => setAdvisorOptions(formAdvisor, formTeam.value));
-appointmentForm.elements.subject.addEventListener('change', () => updateCaptureSourceRequirement());
+formTeam.addEventListener('change', () => { setAdvisorOptions(formAdvisor, formTeam.value); propertyPicker.updateContext(); });
+appointmentForm.elements.subject.addEventListener('change', () => { updateCaptureSourceRequirement(); propertyPicker.updateContext(); });
 grid.addEventListener('click', event => {
   const appointmentTarget = event.target.closest('[data-appointment-id]');
   if (appointmentTarget) {

@@ -5,6 +5,7 @@ const { JSDOM } = require('jsdom');
 
 const html = readFileSync(require.resolve('../index.html'), 'utf8');
 const helpers = readFileSync(require.resolve('../dashboard.js'), 'utf8');
+const pickerScript = readFileSync(require.resolve('../property-picker.js'), 'utf8');
 const app = readFileSync(require.resolve('../app.js'), 'utf8');
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const sample = [
@@ -22,6 +23,15 @@ async function workspace(role = 'admin', options = {}) {
     team: role === 'advisor' ? 'sales' : null, can_manage_team_appointments: role === 'advisor', ...options.profile };
   const calls = [];
   const saved = [];
+  const propertyCalls = [];
+  const functionCalls = [];
+  let propertyResponse = async () => ({ data: {
+    properties: [{
+      code: '459-7337', title: 'Apartamento · Primavera Verde · Neiva', neighborhood: 'Primavera Verde',
+      city: 'Neiva', address: '', rental: true, sales: false,
+      url: 'https://felixtrujillofalla.com/inmuebles/arriendo/detalle/459-7337',
+    }], last_synced_at: '2026-11-18T12:00:00Z',
+  }, error: null });
   let response = async () => ({ data: sample, error: null });
   let realtime;
   const client = {
@@ -59,7 +69,17 @@ async function workspace(role = 'admin', options = {}) {
         return response();
       }
       if (name === 'list_advisors') return { data: options.advisors || [], error: null };
+      if (name === 'search_simi_properties') {
+        propertyCalls.push(JSON.parse(JSON.stringify(args)));
+        return propertyResponse();
+      }
       return { data: [], error: null };
+    },
+    functions: {
+      invoke: async (name, args) => {
+        functionCalls.push({ name, args: JSON.parse(JSON.stringify(args)) });
+        return options.syncResponse || { data: { count: 25 }, error: null };
+      },
     },
     channel: () => {
       const channel = { on: (event, filters, callback) => { realtime = callback; return channel; }, subscribe: () => channel };
@@ -70,6 +90,7 @@ async function workspace(role = 'admin', options = {}) {
   window.SUPABASE_CONFIG = { url: 'https://example.supabase.co', publishableKey: 'public' };
   window.supabase = { createClient: () => client };
   window.eval(helpers);
+  window.eval(pickerScript);
   window.eval(app);
   await settle();
   await window.startSession({ id: 'user' });
@@ -80,7 +101,8 @@ async function workspace(role = 'admin', options = {}) {
     query(selector).dispatchEvent(new window.Event('change'));
     await settle();
   };
-  return { dom, window, query, click, change, calls, saved, profile,
+  return { dom, window, query, click, change, calls, saved, profile, propertyCalls, functionCalls,
+    setPropertyResponse: callback => { propertyResponse = callback; },
     setResponse: callback => { response = callback; }, realtime: () => realtime() };
 }
 
@@ -519,5 +541,172 @@ test('si falta la migración, se indica el script SQL y se conservan los datos d
     assert.equal(ui.query('#appointmentDialog').open, true);
     assert.equal(ui.query('#captureSource').value, 'Instagram');
     assert.equal(ui.query('#captureSource').disabled, false);
+  } finally { ui.dom.window.close(); }
+});
+
+async function searchProperty(ui, query = '7337') {
+  ui.query('#simiPropertyQuery').value = query;
+  await ui.click('#simiSearchButton');
+}
+
+test('solo Visita comercial muestra y consulta el catálogo; los demás asuntos son manuales', async () => {
+  const ui = await workspace();
+  try {
+    await ui.click('#newAppointment');
+    assert.equal(ui.query('#simiPropertyPicker').hidden, true);
+    for (const subject of subjectOptions.filter(value => value !== 'Visita comercial')) {
+      await ui.change('#subject', subject);
+      await searchProperty(ui);
+      await ui.click('#simiSyncButton');
+      assert.equal(ui.query('#simiPropertyPicker').hidden, true);
+    }
+    assert.equal(ui.propertyCalls.length, 0);
+    assert.equal(ui.functionCalls.length, 0);
+    await ui.change('#subject', 'Visita comercial');
+    assert.equal(ui.query('#simiPropertyPicker').hidden, false);
+    assert.equal(ui.propertyCalls.length, 0, 'abrir el selector no hace consultas innecesarias');
+    await searchProperty(ui);
+    assert.equal(ui.propertyCalls.length, 1);
+    assert.deepEqual(ui.propertyCalls[0], { query_text: '7337', target_team: 'all', appointment_subject: 'Visita comercial' });
+  } finally { ui.dom.window.close(); }
+});
+
+test('la búsqueda filtra por equipo y la actualización de SIMI está reservada al administrador', async () => {
+  for (const role of ['admin', 'supervisor', 'advisor']) {
+    const ui = await workspace(role);
+    try {
+      await ui.click('#newAppointment');
+      await ui.change('#subject', 'Visita comercial');
+      await ui.change('#team', 'sales');
+      await searchProperty(ui);
+      assert.equal(ui.propertyCalls[0].target_team, 'sales');
+      assert.equal(ui.query('#simiSyncButton').hidden, role !== 'admin');
+      await ui.click('#simiSyncButton');
+      assert.equal(ui.functionCalls.length, role === 'admin' ? 1 : 0);
+      if (role === 'admin') {
+        assert.deepEqual(ui.functionCalls[0], { name: 'simi-catalog-sync', args: { body: { appointment_subject: 'Visita comercial' } } });
+      }
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('seleccionar un inmueble guarda una copia de sus datos y enlaza la publicación', async () => {
+  const ui = await workspace('admin', { advisors: appointmentAdvisors });
+  try {
+    await ui.click('#newAppointment');
+    await ui.change('#subject', 'Visita comercial');
+    await ui.change('#team', 'sales');
+    await ui.change('#advisor', 'advisor');
+    await ui.change('#captureSource', 'WhatsApp');
+    ui.query('#client').value = 'Cliente';
+    await searchProperty(ui);
+    await ui.click('[data-simi-code="459-7337"]');
+    assert.ok(ui.query('#property').value.includes('459-7337'));
+    assert.equal(ui.query('#simiPropertySelection').hidden, false);
+    assert.equal(ui.query('#simiPropertyLink').hostname, 'felixtrujillofalla.com');
+    await ui.window.saveAppointment({ preventDefault() {} });
+    assert.equal(ui.saved[0].payload.simi_property_code, '459-7337');
+    assert.equal(ui.saved[0].payload.simi_property_url, 'https://felixtrujillofalla.com/inmuebles/arriendo/detalle/459-7337');
+    ui.window.openDetails('new-appointment');
+    assert.ok(ui.query('#detailContent').textContent.includes('Ver inmueble 459-7337'));
+    await ui.click('#editAppointment');
+    assert.ok(ui.query('#property').value.includes('459-7337'));
+    assert.equal(ui.query('#simiPropertySelection').hidden, false);
+    assert.equal(ui.propertyCalls.length, 1, 'editar una cita no recarga ni cambia el inmueble histórico');
+  } finally { ui.dom.window.close(); }
+});
+
+test('cambiar de asunto conserva el texto sin consultas y permite volver al inmueble seleccionado', async () => {
+  const ui = await workspace();
+  try {
+    await ui.click('#newAppointment');
+    await ui.change('#subject', 'Visita comercial');
+    await searchProperty(ui);
+    await ui.click('[data-simi-code="459-7337"]');
+    const text = ui.query('#property').value;
+    await ui.change('#subject', 'Recepción Propietario');
+    assert.equal(ui.query('#simiPropertyPicker').hidden, true);
+    assert.equal(ui.query('#property').value, text);
+    await ui.change('#subject', 'Visita comercial');
+    assert.equal(ui.query('#simiPropertySelection').hidden, false);
+    assert.equal(ui.query('#property').value, text);
+    assert.equal(ui.propertyCalls.length, 1);
+  } finally { ui.dom.window.close(); }
+});
+
+test('la entrada manual funciona sin SIMI y no exige migrar para guardar una dirección', async () => {
+  const ui = await workspace('admin', { advisors: appointmentAdvisors });
+  try {
+    await ui.click('#newAppointment');
+    await ui.change('#subject', 'Visita comercial');
+    await ui.change('#team', 'sales');
+    await ui.change('#advisor', 'advisor');
+    await ui.change('#captureSource', 'Fijo');
+    ui.query('#client').value = 'Cliente';
+    ui.query('#property').value = 'Calle 10 # 4-20';
+    await ui.window.saveAppointment({ preventDefault() {} });
+    assert.equal(ui.saved[0].payload.property, 'Calle 10 # 4-20');
+    assert.equal('simi_property_code' in ui.saved[0].payload, false);
+    assert.equal(ui.propertyCalls.length, 0);
+  } finally { ui.dom.window.close(); }
+});
+
+test('un fallo del catálogo no borra la dirección y las respuestas antiguas no reaparecen al cambiar el asunto', async () => {
+  const ui = await workspace();
+  try {
+    await ui.click('#newAppointment');
+    await ui.change('#subject', 'Visita comercial');
+    ui.query('#property').value = 'Dirección manual';
+    ui.setPropertyResponse(async () => ({ error: { code: 'PGRST202' } }));
+    await searchProperty(ui);
+    assert.ok(ui.query('#simiPropertyStatus').textContent.includes('dirección manual'));
+    assert.equal(ui.query('#property').value, 'Dirección manual');
+    let finish;
+    ui.setPropertyResponse(() => new Promise(resolve => { finish = resolve; }));
+    await searchProperty(ui);
+    await ui.change('#subject', 'Previsita de devolución');
+    finish({ data: { properties: [{ code: '459-1', url: 'https://felixtrujillofalla.com/inmuebles/venta/detalle/459-1' }] } });
+    await settle();
+    assert.equal(ui.query('#simiPropertyResults').children.length, 0);
+    assert.equal(ui.query('#simiPropertyPicker').hidden, true);
+    assert.equal(ui.query('#property').value, 'Dirección manual');
+  } finally { ui.dom.window.close(); }
+});
+
+test('los resultados se tratan como texto y rechazan enlaces ajenos o javascript', async () => {
+  const ui = await workspace();
+  try {
+    ui.setPropertyResponse(async () => ({ data: {
+      properties: [
+        { code: '459-1', title: '<img src=x onerror=alert(1)>', url: 'https://felixtrujillofalla.com/inmuebles/venta/detalle/459-1' },
+        { code: '459-2', title: 'Peligroso', url: 'javascript:alert(1)' },
+        { code: '459-3', title: 'Ajeno', url: 'https://otro.example/inmuebles/venta/detalle/459-3' },
+      ], last_synced_at: '2026-11-18T12:00:00Z',
+    } }));
+    await ui.click('#newAppointment');
+    await ui.change('#subject', 'Visita comercial');
+    await searchProperty(ui, 'Neiva');
+    assert.equal(ui.query('#simiPropertyResults img'), null);
+    assert.equal(ui.query('#simiPropertyResults').children.length, 1);
+    assert.ok(ui.query('#simiPropertyResults').textContent.includes('<img'));
+  } finally { ui.dom.window.close(); }
+});
+
+test('modificar la dirección manualmente desvincula un inmueble sin borrar el texto', async () => {
+  const appointment = {
+    ...oldAppointment, subject: 'Visita comercial', capture_source: 'WhatsApp',
+    property: '459-7337 · Apartamento histórico', simi_property_code: '459-7337',
+    simi_property_url: 'https://felixtrujillofalla.com/inmuebles/arriendo/detalle/459-7337',
+  };
+  const ui = await workspace('admin', { advisors: appointmentAdvisors, appointments: [appointment] });
+  try {
+    ui.window.openAppointmentDialog(ui.window.mapAppointment(appointment));
+    ui.query('#property').value = 'Nueva dirección manual';
+    ui.query('#property').dispatchEvent(new ui.window.Event('input'));
+    assert.equal(ui.query('#simiPropertySelection').hidden, true);
+    await ui.window.saveAppointment({ preventDefault() {} });
+    assert.equal(ui.saved[0].payload.property, 'Nueva dirección manual');
+    assert.equal(ui.saved[0].payload.simi_property_code, null);
+    assert.equal(ui.saved[0].payload.simi_property_url, null);
   } finally { ui.dom.window.close(); }
 });

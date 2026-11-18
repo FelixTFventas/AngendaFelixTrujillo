@@ -1,0 +1,3 @@
+[functions.simi-catalog-sync]
+# La función valida la sesión con auth.getUser, o el secreto exclusivo del programador.
+verify_jwt = false

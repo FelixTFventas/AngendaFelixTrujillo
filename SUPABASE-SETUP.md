@@ -110,6 +110,9 @@ La paleta disponible es Ámbar, Turquesa, Azul, Violeta, Coral, Esmeralda, Índi
 - Para otros asuntos puede registrarse, cambiarse o eliminarse el medio. El formulario adapta la validación al cambiar el asunto sin borrar automáticamente la selección.
 - No cambia los permisos de creación o edición de citas ni los indicadores del dashboard.
 
-## Pruebas locales
+## Buscador de inmuebles SIMI
 
+Para activar el catálogo de solo lectura, sigue **[SIMI-SETUP.md](SIMI-SETUP.md)**. Requiere `supabase/add-simi-property-catalog.sql`, la función `simi-catalog-sync` y la clave guardada como secreto en Supabase. No modifica la web ni SIMI. El buscador solo aparece para **Visita comercial**; los demás asuntos conservan la dirección manual. La actualización periódica es opcional y se configura después de confirmar las cuotas.
+
+## Pruebas locales
 Con Node.js instalado, ejecuta `npm ci` y después `npm test`. Las pruebas comprueban periodos, filtros, acceso por rol, actualización de la interfaz y la función SQL en un PostgreSQL local en memoria. No se conectan al proyecto de Supabase ni modifican datos reales. Las dependencias de pruebas no son necesarias para publicar la aplicación estática.
