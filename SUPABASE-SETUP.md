@@ -19,6 +19,8 @@ Finalmente, ejecuta una sola vez `supabase/add-appointment-creators.sql` para qu
 
 Para activar el dashboard en un proyecto existente, ejecuta también `supabase/add-appointment-dashboard.sql` en **SQL Editor**. No requiere nuevas Edge Functions. Las instalaciones nuevas ya incluyen esta función en `supabase/schema.sql`.
 
+Para añadir **Captado**, ejecuta `supabase/add-appointment-capture-source.sql` y después `supabase/require-capture-source-for-commercial-visits.sql` en **SQL Editor**, antes de publicar el formulario actualizado. Si ya ejecutaste el primer archivo, ejecuta únicamente el segundo para ajustar la obligatoriedad a **Visita comercial**. Ninguno modifica las citas existentes. Tras publicar, recarga la aplicación en los dispositivos abiertos: las visitas comerciales nuevas necesitan el medio de captación. Las instalaciones nuevas ya incluyen la regla final en `supabase/schema.sql`.
+
 ## 2. Crear el administrador inicial
 
 1. Entra en **Authentication > Users**.
@@ -98,6 +100,16 @@ La paleta disponible es Ámbar, Turquesa, Azul, Violeta, Coral, Esmeralda, Índi
 - Las citas eliminadas definitivamente no forman parte de las estadísticas.
 - Los permisos de lectura de la agenda no cambian: todos los usuarios activos siguen consultando las citas. La restricción adicional se aplica a la pestaña y a la función de indicadores.
 
-### Pruebas locales
+## Medio de captación de la cita
+
+- **Captado** aparece debajo de **Inmueble o dirección**, con las opciones WhatsApp, Fijo, Finca Raíz, Proppit, Ciencuadras, Facebook e Instagram.
+- Es obligatorio al crear una cita con asunto **Visita comercial**, tanto en el formulario como en Supabase. Para los demás asuntos es opcional.
+- Se guarda en `appointments.capture_source` y se muestra también en el detalle y al editar.
+- Las visitas comerciales antiguas sin medio registrado conservan la compatibilidad: pueden editarse manteniendo el mismo asunto sin completar ese dato.
+- Al cambiar otro asunto a **Visita comercial**, hay que seleccionar el medio. Si una visita comercial ya tiene un medio, no puede eliminarse mientras mantenga ese asunto.
+- Para otros asuntos puede registrarse, cambiarse o eliminarse el medio. El formulario adapta la validación al cambiar el asunto sin borrar automáticamente la selección.
+- No cambia los permisos de creación o edición de citas ni los indicadores del dashboard.
+
+## Pruebas locales
 
 Con Node.js instalado, ejecuta `npm ci` y después `npm test`. Las pruebas comprueban periodos, filtros, acceso por rol, actualización de la interfaz y la función SQL en un PostgreSQL local en memoria. No se conectan al proyecto de Supabase ni modifican datos reales. Las dependencias de pruebas no son necesarias para publicar la aplicación estática.

@@ -117,6 +117,7 @@ function mapAppointment(row) {
     client: row.client,
     phone: row.phone || '',
     property: row.property || '',
+    captureSource: row.capture_source || '',
     status: row.status,
     notes: row.notes || '',
     advisorId: row.advisor_id,
@@ -462,9 +463,35 @@ function navigateDashboard(amount) {
   loadDashboard();
 }
 
+function requiresCaptureSource(subject, appointment = null) {
+  return subject === 'Visita comercial'
+    && (!appointment || appointment.subject !== 'Visita comercial' || Boolean(appointment.captureSource));
+}
+
+function updateCaptureSourceRequirement(appointment = appointments.find(item => item.id === appointmentForm.elements.id.value)) {
+  const source = appointmentForm.elements.captureSource;
+  const subject = appointmentForm.elements.subject.value;
+  source.required = requiresCaptureSource(subject, appointment);
+  source.options[0].disabled = source.required;
+  source.options[0].textContent = source.required ? 'Selecciona el medio' : appointment ? 'Sin registrar' : 'Selecciona el medio (opcional)';
+  document.querySelector('#captureSourceHint').textContent = source.required
+    ? 'Obligatorio para “Visita comercial”.'
+    : subject === 'Visita comercial'
+      ? 'Esta cita antigua no tiene medio registrado. Puedes añadirlo de forma opcional.'
+      : 'Opcional para este asunto. Solo es obligatorio para “Visita comercial”.';
+}
+
 function openAppointmentDialog(appointment = null) {
   if (appointment && !canManageAppointment(appointment)) return;
   appointmentForm.reset();
+  const subject = appointmentForm.elements.subject;
+  subject.querySelectorAll('[data-legacy-subject]').forEach(option => option.remove());
+  if (appointment?.subject && ![...subject.options].some(option => option.value === appointment.subject)) {
+    const legacyOption = new Option(appointment.subject, appointment.subject);
+    legacyOption.dataset.legacySubject = 'true';
+    subject.add(legacyOption);
+  }
+  appointmentForm.elements.captureSource.value = appointment?.captureSource || '';
   appointmentForm.elements.id.value = appointment?.id || '';
   document.querySelector('#formDialogTitle').textContent = appointment ? 'Editar cita' : 'Nueva cita';
   document.querySelector('#formDialogDescription').textContent = appointment ? 'Actualiza la información y guarda los cambios.' : 'Registra los datos de la cita con el cliente.';
@@ -500,6 +527,7 @@ function openAppointmentDialog(appointment = null) {
 
   formTeam.disabled = !isGlobalAppointmentManager();
   appointmentForm.elements.status.disabled = !canAssignAppointments();
+  updateCaptureSourceRequirement(appointment);
   appointmentDialog.showModal();
   appointmentForm.elements.subject.focus();
 }
@@ -522,6 +550,7 @@ function openDetails(id) {
     <div class="detail-item"><span class="detail-label">Fecha y hora</span><p class="detail-value">${escapeHTML(formattedDate)}, ${escapeHTML(formattedTime)}</p></div>
     <div class="detail-item"><span class="detail-label">Creada por</span><p class="detail-value">${escapeHTML(creatorName)}</p></div>
     <div class="detail-item full"><span class="detail-label">Inmueble o dirección</span><p class="detail-value">${escapeHTML(appointment.property || 'No registrado')}</p></div>
+    <div class="detail-item full"><span class="detail-label">Captado</span><p class="detail-value">${escapeHTML(appointment.captureSource || 'Sin registrar')}</p></div>
     <div class="detail-item full"><span class="detail-label">Notas</span><p class="detail-value detail-notes">${escapeHTML(appointment.notes || 'Sin notas adicionales.')}</p></div>
   </div>`;
   const phone = String(appointment.phone || '').replace(/\D/g, '');
@@ -536,6 +565,7 @@ function openDetails(id) {
 async function saveAppointment(event) {
   event.preventDefault();
   const existingId = appointmentForm.elements.id.value;
+  const existing = appointments.find(appointment => appointment.id === existingId);
   const payload = {
     appointment_date: appointmentForm.elements.date.value,
     appointment_time: appointmentForm.elements.time.value,
@@ -544,9 +574,20 @@ async function saveAppointment(event) {
     phone: appointmentForm.elements.phone.value.trim(),
     advisor_id: formAdvisor.value,
     property: appointmentForm.elements.property.value.trim(),
+    capture_source: appointmentForm.elements.captureSource.value || null,
     status: appointmentForm.elements.status.value,
     notes: appointmentForm.elements.notes.value.trim(),
   };
+  if (!payload.subject) {
+    showToast('Selecciona el asunto de la cita.');
+    appointmentForm.elements.subject.focus();
+    return;
+  }
+  if (requiresCaptureSource(payload.subject, existing) && !payload.capture_source) {
+    showToast('Selecciona por dónde fue captada la cita.');
+    appointmentForm.elements.captureSource.focus();
+    return;
+  }
   if (!payload.advisor_id) {
     showToast('Selecciona un asesor responsable.');
     return;
@@ -557,7 +598,6 @@ async function saveAppointment(event) {
     return;
   }
   if (existingId) {
-    const existing = appointments.find(appointment => appointment.id === existingId);
     if (!existing || !canManageAppointment(existing)) {
       showToast('No tienes permiso para editar esta cita.');
       return;
@@ -578,7 +618,10 @@ async function saveAppointment(event) {
   const { data, error } = await query.select().single();
   setBusy(appointmentForm, false);
   if (error) {
-    showToast(readableError(error));
+    const missingCaptureSource = ['PGRST204', '42703'].includes(error.code) && /capture_source/i.test(error.message || '');
+    showToast(missingCaptureSource
+      ? 'Falta activar Captado en Supabase. Sigue los dos scripts de captación indicados en SUPABASE-SETUP.md.'
+      : readableError(error));
     return;
   }
   const saved = mapAppointment(data);
@@ -943,6 +986,7 @@ document.querySelector('#advisorsByTeam').addEventListener('click', event => {
 teamFilter.addEventListener('change', () => { setAdvisorOptions(advisorFilter, teamFilter.value, 'all', true); render(); });
 advisorFilter.addEventListener('change', render);
 formTeam.addEventListener('change', () => setAdvisorOptions(formAdvisor, formTeam.value));
+appointmentForm.elements.subject.addEventListener('change', () => updateCaptureSourceRequirement());
 grid.addEventListener('click', event => {
   const appointmentTarget = event.target.closest('[data-appointment-id]');
   if (appointmentTarget) {
