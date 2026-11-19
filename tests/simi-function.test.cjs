@@ -1,4 +1,4 @@
-const { test } = require('node:test');
+const { test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const { stripTypeScriptTypes } = require('node:module');
@@ -6,10 +6,13 @@ const vm = require('node:vm');
 const { webcrypto } = require('node:crypto');
 const source = readFileSync(require.resolve('../supabase/functions/simi-catalog-sync/index.ts'), 'utf8');
 const script = stripTypeScriptTypes(source.replace(/^import .*$/gm, ''));
+let adapter;
+before(async () => { adapter = await import('../supabase/functions/simi-catalog-sync/simi.mjs'); });
 
 function setup(options = {}) {
   let handler;
   const calls = [];
+  const logs = [];
   const env = {
     SUPABASE_URL: 'https://test.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'LOCAL-TEST',
     SIMI_API_KEY: 'TEST-ONLY', ...options.env,
@@ -39,10 +42,18 @@ function setup(options = {}) {
       if (options.failDownload) throw new Error('No fue posible conectar con SIMI por HTTPS. El catálogo anterior se conserva.');
       return [{ code: '459-1' }];
     },
+    probeConnection: async () => {
+      calls.push({ name: 'probe' });
+      if (options.probeError) throw options.probeError;
+      return { ok: true, code: 'SIMI_OK', sample_count: 1, elapsed_ms: 10 };
+    },
+    SimiError: adapter.SimiError, safeDiagnostic: adapter.safeDiagnostic,
+    console: { error: message => logs.push(JSON.parse(message)) },
     Response, Request, TextEncoder, crypto: webcrypto,
   });
   return {
     calls,
+    logs,
     request: (body = { appointment_subject: 'Visita comercial' }, headers = { Authorization: 'Bearer valid' }, method = 'POST') =>
       handler(new Request('https://test.supabase.co/functions/v1/simi-catalog-sync', {
         method, headers: { 'Content-Type': 'application/json', ...headers },
@@ -53,7 +64,8 @@ function setup(options = {}) {
 
 test('la función rechaza métodos no admitidos y sesiones ausentes sin consultar SIMI', async () => {
   const fixture = setup();
-  assert.equal((await fixture.request({}, {}, 'GET')).status, 405);
+  assert.equal((await fixture.request({}, {}, 'PUT')).status, 405);
+  assert.equal((await fixture.request({}, {}, 'GET')).status, 401);
   assert.equal((await fixture.request({}, {})).status, 401);
   assert.equal((await fixture.request({}, { Authorization: 'Bearer invalid' })).status, 401);
   assert.equal(fixture.calls.length, 0);
@@ -97,4 +109,41 @@ test('un bloqueo activo no permite descargar y un fallo conserva el catálogo li
   const failing = setup({ failDownload: true });
   assert.equal((await failing.request()).status, 502);
   assert.deepEqual(failing.calls.map(call => call.name), ['begin_simi_catalog_sync', 'download', 'cancel_simi_catalog_sync']);
+});
+
+test('GET prueba la conexión sin adquirir bloqueos ni escribir el catálogo', async () => {
+  const fixture = setup();
+  const response = await fixture.request(undefined, {
+    Authorization: 'Bearer valid', 'x-simi-appointment-subject': 'Visita comercial',
+  }, 'GET');
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).code, 'SIMI_OK');
+  assert.deepEqual(fixture.calls.map(call => call.name), ['probe']);
+  assert.equal((await fixture.request(undefined, { Authorization: 'Bearer valid' }, 'GET')).status, 400);
+});
+
+test('solo administrador activo puede ejecutar la prueba pequeña', async () => {
+  for (const options of [{ role: 'advisor' }, { role: 'supervisor' }, { active: false }]) {
+    const fixture = setup(options);
+    assert.equal((await fixture.request(undefined, {
+      Authorization: 'Bearer valid', 'x-simi-appointment-subject': 'Visita comercial',
+    }, 'GET')).status, 403);
+    assert.equal(fixture.calls.length, 0);
+  }
+});
+
+test('se devuelven y registran códigos seguros de error sin copiar información privada', async () => {
+  const fixture = setup({ probeError: new adapter.SimiError('SIMI_TIMEOUT', 'Tiempo de espera agotado.', {
+    page: 1, timeout_ms: 45000, apiKey: 'NO-REVELAR', url: 'https://example.com/NO-REVELAR',
+  }) });
+  const response = await fixture.request(undefined, {
+    Authorization: 'Bearer valid', 'x-simi-appointment-subject': 'Visita comercial',
+  }, 'GET');
+  assert.equal(response.status, 504);
+  const payload = await response.json();
+  assert.equal(payload.code, 'SIMI_TIMEOUT');
+  assert.equal(payload.diagnostic.page, 1);
+  assert.equal(JSON.stringify(payload).includes('NO-REVELAR'), false);
+  assert.equal(JSON.stringify(fixture.logs).includes('NO-REVELAR'), false);
+  assert.equal(fixture.logs[0].event, 'simi_request_failed');
 });

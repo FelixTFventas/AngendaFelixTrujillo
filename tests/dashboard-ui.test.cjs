@@ -25,6 +25,7 @@ async function workspace(role = 'admin', options = {}) {
   const saved = [];
   const propertyCalls = [];
   const functionCalls = [];
+  let functionResponse = async () => options.syncResponse || { data: { count: 25 }, error: null };
   let propertyResponse = async () => ({ data: {
     properties: [{
       code: '459-7337', title: 'Apartamento · Primavera Verde · Neiva', neighborhood: 'Primavera Verde',
@@ -78,7 +79,7 @@ async function workspace(role = 'admin', options = {}) {
     functions: {
       invoke: async (name, args) => {
         functionCalls.push({ name, args: JSON.parse(JSON.stringify(args)) });
-        return options.syncResponse || { data: { count: 25 }, error: null };
+        return functionResponse();
       },
     },
     channel: () => {
@@ -103,6 +104,7 @@ async function workspace(role = 'admin', options = {}) {
   };
   return { dom, window, query, click, change, calls, saved, profile, propertyCalls, functionCalls,
     setPropertyResponse: callback => { propertyResponse = callback; },
+    setFunctionResponse: callback => { functionResponse = callback; },
     setResponse: callback => { response = callback; }, realtime: () => realtime() };
 }
 
@@ -708,5 +710,66 @@ test('modificar la dirección manualmente desvincula un inmueble sin borrar el t
     assert.equal(ui.saved[0].payload.property, 'Nueva dirección manual');
     assert.equal(ui.saved[0].payload.simi_property_code, null);
     assert.equal(ui.saved[0].payload.simi_property_url, null);
+  } finally { ui.dom.window.close(); }
+});
+
+test('Probar conexión es un GET separado, solo para administradores y visitas comerciales', async () => {
+  for (const role of ['admin', 'supervisor', 'advisor']) {
+    const ui = await workspace(role, { syncResponse: { data: { code: 'SIMI_OK', ok: true }, error: null } });
+    try {
+      await ui.click('#newAppointment');
+      await ui.click('#simiProbeButton');
+      assert.equal(ui.functionCalls.length, 0);
+      await ui.change('#subject', 'Visita comercial');
+      assert.equal(ui.query('#simiProbeButton').hidden, role !== 'admin');
+      await ui.click('#simiProbeButton');
+      assert.equal(ui.functionCalls.length, role === 'admin' ? 1 : 0);
+      if (role === 'admin') {
+        assert.deepEqual(ui.functionCalls[0], {
+          name: 'simi-catalog-sync',
+          args: { method: 'GET', headers: { 'x-simi-appointment-subject': 'Visita comercial' } },
+        });
+        assert.ok(ui.query('#simiPropertyStatus').textContent.includes('Conexión con SIMI comprobada'));
+        assert.equal(ui.propertyCalls.length, 0);
+      }
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('el diagnóstico de la función muestra el código y la página sin borrar la dirección manual', async () => {
+  const ui = await workspace('admin', { syncResponse: {
+    error: { context: { json: async () => ({
+      error: 'SIMI tardó más del tiempo permitido.', code: 'SIMI_TIMEOUT', diagnostic: { page: 1 },
+    }) } },
+  } });
+  try {
+    await ui.click('#newAppointment');
+    await ui.change('#subject', 'Visita comercial');
+    ui.query('#property').value = 'Dirección manual';
+    await ui.click('#simiProbeButton');
+    assert.ok(ui.query('#simiPropertyStatus').textContent.includes('SIMI_TIMEOUT, página 1'));
+    assert.equal(ui.query('#property').value, 'Dirección manual');
+    assert.equal(ui.query('#simiSyncButton').disabled, false);
+    assert.equal(ui.query('#simiProbeButton').disabled, false);
+  } finally { ui.dom.window.close(); }
+});
+
+test('no se lanzan pruebas y sincronizaciones simultáneas ni se aplican resultados a otro asunto', async () => {
+  const ui = await workspace();
+  try {
+    let finish;
+    ui.setFunctionResponse(() => new Promise(resolve => { finish = resolve; }));
+    await ui.click('#newAppointment');
+    await ui.change('#subject', 'Visita comercial');
+    await ui.click('#simiProbeButton');
+    assert.equal(ui.query('#simiProbeButton').disabled, true);
+    assert.equal(ui.query('#simiSyncButton').disabled, true);
+    await ui.click('#simiSyncButton');
+    assert.equal(ui.functionCalls.length, 1);
+    await ui.change('#subject', 'Previsita de devolución');
+    finish({ data: { code: 'SIMI_OK' }, error: null });
+    await settle();
+    assert.equal(ui.query('#simiPropertyPicker').hidden, true);
+    assert.equal(ui.query('#simiPropertyStatus').textContent.includes('Conexión con SIMI comprobada'), false);
   } finally { ui.dom.window.close(); }
 });

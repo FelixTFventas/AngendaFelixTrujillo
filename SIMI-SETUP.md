@@ -5,7 +5,7 @@ El buscador aparece **solo para Visita comercial**. Para los otros asuntos perma
 ## Qué se consulta y qué no se modifica
 
 - La agenda busca en una copia del catálogo en Supabase, no en SIMI al escribir cada letra.
-- Solo la función `simi-catalog-sync` consulta SIMI. Usa exclusivamente **GET**, una URL fija **HTTPS** y rechaza redirecciones. No crea, edita ni elimina datos en SIMI o en la página web.
+- Solo la función `simi-catalog-sync` consulta SIMI. Usa exclusivamente **GET** y **HTTPS**. Solo admite redirecciones de la misma ruta entre `simi-api.com` y `www.simi-api.com`; rechaza HTTP, otros dominios, puertos y destinos. No crea, edita ni elimina datos en SIMI o en la página web.
 - Solo el administrador puede actualizar el catálogo manualmente. Los demás usuarios activos pueden buscar para visitas comerciales.
 - No se importan propietarios, clientes, documentos, teléfonos ni contactos de asesores. Solo código, tipo, barrio, ciudad, dirección propia del inmueble si se entrega, operación y enlace a la publicación.
 - La clave no está en el frontend ni en GitHub. No la pegues en conversaciones, archivos SQL, capturas ni ejemplos de código.
@@ -28,7 +28,14 @@ En **Supabase → Edge Functions → Secrets**, crea:
 
 La documentación pública usa `Authorization: Basic base64("Authorization:" + token)`. La función hace esa codificación automáticamente. Si SIMI te entregó un encabezado ya formado o credenciales diferentes, consulta primero su formato; no pruebes variaciones publicando la clave.
 
-Opcionales: `SIMI_PAGE_SIZE` (por defecto 50, máximo 100) y `SIMI_MAX_PAGES` (por defecto 100, máximo 200). Confirma las cuotas antes de aumentarlos.
+Opcionales:
+
+- `SIMI_PAGE_SIZE`: por defecto **20**, máximo 100. Las páginas son más pequeñas para reducir el tiempo de respuesta. Aumentar o reducir este valor cambia el número total de consultas.
+- `SIMI_MAX_PAGES`: por defecto 100, máximo 200.
+- `SIMI_REQUEST_TIMEOUT_MS`: por defecto **45000** (45 segundos), máximo 60000.
+- `SIMI_SYNC_TIMEOUT_MS`: por defecto **100000** (100 segundos para la descarga completa), máximo 120000. Evita dejar una descarga ilimitada; si no termina, no se aplica una copia parcial.
+
+Confirma las cuotas antes de cambiar estos límites. No hay reintentos automáticos tras errores de red, autenticación o cuota.
 
 `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` son secretos internos proporcionados por Supabase; nunca se copian al frontend.
 
@@ -48,14 +55,40 @@ Si despliegas desde el editor del panel, incluye **ambos archivos** de `supabase
 
 1. Publica la aplicación actualizada y recarga la página.
 2. Inicia sesión como administrador y abre **Nueva cita**.
-3. Selecciona **Visita comercial** y pulsa **Actualizar catálogo**.
-4. Espera el mensaje con el número de inmuebles.
+3. Selecciona **Visita comercial**.
+4. Antes de la primera sincronización, puedes pulsar **Probar conexión**: hace una sola consulta de un inmueble, no guarda datos ni reemplaza el catálogo. Si funciona, pulsa **Actualizar catálogo** y espera el mensaje con el número de inmuebles.
 5. Selecciona equipo, busca un código publicado conocido y comprueba sus datos.
 6. Elige el inmueble y guarda una cita de prueba con tus permisos habituales.
 7. Reabre la cita y verifica que conserva la descripción, el código y el enlace.
 8. Cambia el asunto a otro tipo: el buscador desaparece y la dirección permanece editable.
 
 **Aún hay que probar tu cuenta real**: la documentación tiene inconsistencias de paginación y algunos ejemplos de respuesta están incompletos. El adaptador reconoce `data`, `totalInmuebles` y `totalPagina`, y falla de forma segura si el formato o la paginación no coinciden. No se ha probado con tu clave durante el desarrollo.
+
+### Si ya publicaste la primera versión de la función
+
+Actualiza **los dos archivos** `index.ts` y `simi.mjs` en la función existente y pulsa **Deploy updates**. Mantén desactivado **Verify JWT with legacy secret** solo en `simi-catalog-sync`. No hay que volver a ejecutar SQL ni cambiar tu clave para aplicar esta corrección.
+
+Publica después la nueva versión de la agenda para ver **Probar conexión**. La prueba utiliza GET autenticado: si todavía está desplegada la función antigua, esta lo rechaza sin iniciar una sincronización.
+
+### Diagnóstico seguro de conexión
+
+El mensaje de la agenda incluye un código y, cuando corresponde, la página que falló. En **Edge Functions → simi-catalog-sync → Logs**, los eventos `simi_request_failed` contienen únicamente código, acción, página, estado HTTP y tiempos. No incluyen la clave, encabezados, tokens, respuesta de SIMI ni contactos.
+
+| Código | Qué significa / qué revisar |
+|---|---|
+| `SIMI_TIMEOUT` | Una consulta no terminó a tiempo. La espera pasó de 15 a 45 segundos por defecto; revisa el tamaño de página y la latencia con soporte. |
+| `SIMI_SYNC_TIMEOUT` | La descarga completa agotó su presupuesto de tiempo. No se guardó una copia parcial. |
+| `SIMI_TLS` | Falló la validación del certificado TLS. Solicita a SIMI revisar la cadena de certificados; nunca desactives TLS ni uses HTTP con la clave. |
+| `SIMI_DNS` | Supabase no pudo resolver el dominio. Consulta si SIMI permite el acceso desde servicios externos. |
+| `SIMI_NETWORK` | Falló el transporte. Confirma restricciones por IP/centro de datos con SIMI y revisa sus registros en la hora indicada. |
+| `SIMI_REDIRECT` | El servidor redirigió fuera de los destinos HTTPS autorizados o entró en un bucle. No se envió la clave al destino rechazado. |
+| `SIMI_AUTH` | SIMI rechazó clave o permisos, incluso si su respuesta HTTP era 200. Confirma el formato original y los permisos con soporte sin compartir la clave. |
+| `SIMI_RATE_LIMIT` | Se alcanzó la cuota; no repitas consultas y confirma los límites. |
+| `SIMI_FORMAT` | El servidor no entregó el formato de listado esperado. Se necesita confirmar el contrato de la API. |
+| `SIMI_HTTP` | El proveedor devolvió otro estado HTTP de error; el diagnóstico indica su número, sin mostrar el cuerpo. |
+| `SIMI_UNEXPECTED` | Fallo no clasificado de la función; no se expone el error crudo. |
+
+Que el servicio responda desde un computador **no demuestra** que admita conexiones autenticadas desde Supabase. El diagnóstico distingue esas situaciones; la causa real solo puede confirmarse al volver a probar la función con tu cuenta.
 
 No se solicita el detalle de cada inmueble en una llamada adicional. Si el listado no incluye la dirección exacta, se muestra código, tipo, barrio y ciudad; puedes completar la dirección manualmente. No se toma la dirección de los contactos.
 

@@ -30,7 +30,7 @@ test('los datos de otra inmobiliaria y los códigos o gestiones desconocidos son
   }
 });
 
-test('descarga paginada con GET fijo HTTPS, sin redirecciones y autorización Basic documentada', async () => {
+test('descarga paginada con GET HTTPS, redirecciones manuales y autorización Basic documentada', async () => {
   const calls = [];
   const properties = await adapter.downloadCatalog({
     apiKey: 'TOKEN-DE-PRUEBA', pageSize: 2,
@@ -45,7 +45,7 @@ test('descarga paginada con GET fijo HTTPS, sin redirecciones y autorización Ba
   for (const { url, options } of calls) {
     assert.equal(new URL(url).origin, 'https://simi-api.com');
     assert.equal(options.method, 'GET');
-    assert.equal(options.redirect, 'error');
+    assert.equal(options.redirect, 'manual');
     assert.equal(atob(options.headers.Authorization.slice(6)), 'Authorization:TOKEN-DE-PRUEBA');
     assert.equal(url.includes('TOKEN-DE-PRUEBA'), false);
   }
@@ -54,7 +54,8 @@ test('descarga paginada con GET fijo HTTPS, sin redirecciones y autorización Ba
 test('rechaza respuestas de autenticación incluso si SIMI devuelve HTTP 200', async () => {
   await assert.rejects(adapter.downloadCatalog({
     apiKey: 'TEST', fetcher: async () => json({ status: 401, description: 'No autorizado' }),
-  }), /listado válido/);
+  }), error => error.code === 'SIMI_AUTH');
+  assert.throws(() => adapter.parsePage({ status: 200, code: 403, data: [] }), error => error.code === 'SIMI_AUTH');
 });
 
 test('duplicados, descargas vacías, metadatos cambiantes y cortes no se aceptan como catálogo completo', async () => {
@@ -98,4 +99,120 @@ test('no revela la clave ni utiliza HTTP en errores de red, cuota o formato', as
     await assert.rejects(adapter.downloadCatalog({ apiKey: 'TOKEN-SECRETO', fetcher }), error => !error.message.includes('TOKEN-SECRETO'));
   }
   assert.throws(() => adapter.catalogURL(0, 50));
+});
+
+test('distingue tiempo agotado, certificado TLS, DNS y fallo de red sin mostrar errores crudos', async () => {
+  for (const [cause, expected] of [
+    [new DOMException('TOKEN-SECRETO', 'TimeoutError'), 'SIMI_TIMEOUT'],
+    [new Error('TLS certificate unknown issuer TOKEN-SECRETO'), 'SIMI_TLS'],
+    [Object.assign(new Error('TOKEN-SECRETO'), { cause: { code: 'ENOTFOUND' } }), 'SIMI_DNS'],
+    [new Error('connection reset TOKEN-SECRETO'), 'SIMI_NETWORK'],
+  ]) {
+    await assert.rejects(adapter.downloadCatalog({
+      apiKey: 'TOKEN-SECRETO', fetcher: async () => { throw cause; },
+    }), error => {
+      assert.equal(error.code, expected);
+      assert.equal(error.message.includes('TOKEN-SECRETO'), false);
+      assert.equal(error.details.page, 1);
+      assert.equal(error.details.timeout_ms, 45000);
+      assert.equal(JSON.stringify(adapter.safeDiagnostic(error)).includes('TOKEN-SECRETO'), false);
+      return true;
+    });
+  }
+});
+
+test('clasifica errores HTTP y cuotas sin repetir consultas automáticamente', async () => {
+  for (const [status, expected] of [[401, 'SIMI_AUTH'], [403, 'SIMI_AUTH'], [429, 'SIMI_RATE_LIMIT'], [503, 'SIMI_HTTP']]) {
+    let calls = 0;
+    await assert.rejects(adapter.downloadCatalog({
+      apiKey: 'TEST', fetcher: async () => { calls += 1; return new Response('TOKEN-SECRETO', { status }); },
+    }), error => error.code === expected && !error.message.includes('TOKEN-SECRETO'));
+    assert.equal(calls, 1);
+  }
+  await assert.rejects(adapter.downloadCatalog({
+    apiKey: 'TEST', fetcher: async () => json({ status: 429, description: 'TOKEN-SECRETO' }),
+  }), error => error.code === 'SIMI_RATE_LIMIT');
+});
+
+test('solo sigue redirecciones HTTPS oficiales, sin filtrar credenciales a otros destinos', async () => {
+  const calls = [];
+  const result = await adapter.downloadCatalog({
+    apiKey: 'TEST',
+    fetcher: async (url, options) => {
+      calls.push({ url, options });
+      return calls.length === 1
+        ? new Response(null, { status: 301, headers: { location: url.replace('https://simi-api.com', 'https://www.simi-api.com') } })
+        : json({ data: [row()], totalInmuebles: 1, totalPagina: 1 });
+    },
+  });
+  assert.equal(result.length, 1);
+  assert.equal(calls.length, 2);
+  assert.equal(new URL(calls[1].url).origin, 'https://www.simi-api.com');
+  assert.equal(calls[0].options.headers.Authorization, calls[1].options.headers.Authorization);
+  for (const location of [
+    'http://simi-api.com/ApiSimiweb/response/x',
+    'https://evil.example/ApiSimiweb/response/x',
+    'https://simi-api.com.evil.example/ApiSimiweb/response/x',
+    'https://simi-api.com/login',
+    'https://user:pass@simi-api.com/ApiSimiweb/response/x',
+  ]) {
+    let count = 0;
+    await assert.rejects(adapter.downloadCatalog({
+      apiKey: 'TEST', fetcher: async () => { count += 1; return new Response(null, { status: 302, headers: { location } }); },
+    }), error => error.code === 'SIMI_REDIRECT');
+    assert.equal(count, 1, 'no se contacta con el destino rechazado');
+  }
+});
+
+test('limita bucles de redirección y el tiempo de toda la descarga', async () => {
+  let calls = 0;
+  await assert.rejects(adapter.downloadCatalog({
+    apiKey: 'TEST',
+    fetcher: async url => { calls += 1; return new Response(null, { status: 302, headers: { location: url } }); },
+  }), error => error.code === 'SIMI_REDIRECT');
+  assert.equal(calls, 3);
+  let now = 0;
+  await assert.rejects(adapter.downloadCatalog({
+    apiKey: 'TEST', totalTimeoutMs: 1000, clock: () => now,
+    fetcher: async () => { now = 1100; return json({ data: [row()], totalInmuebles: 2, totalPagina: 2 }); },
+  }), error => error.code === 'SIMI_SYNC_TIMEOUT' && error.details.page === 2);
+});
+
+test('un fallo durante la lectura del cuerpo recibe el mismo diagnóstico seguro', async () => {
+  await assert.rejects(adapter.downloadCatalog({
+    apiKey: 'TEST',
+    fetcher: async () => new Response(new ReadableStream({
+      pull(controller) { controller.error(new DOMException('TOKEN-SECRETO', 'TimeoutError')); },
+    })),
+  }), error => error.code === 'SIMI_TIMEOUT' && !error.message.includes('TOKEN-SECRETO'));
+});
+
+test('la prueba de conexión usa una sola consulta pequeña y no devuelve datos del inmueble', async () => {
+  const calls = [];
+  const result = await adapter.probeConnection({
+    apiKey: 'TEST', pageSize: 100,
+    fetcher: async (url, options) => {
+      calls.push({ url, options });
+      return json({ data: [row('459-1', { propietario: { nombre: 'PRIVADO' } })], totalInmuebles: 500, totalPagina: 500 });
+    },
+  });
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.includes('/total/1/'));
+  assert.equal(result.code, 'SIMI_OK');
+  assert.equal(result.sample_count, 1);
+  assert.equal(JSON.stringify(result).includes('459-1'), false);
+  assert.equal(JSON.stringify(result).includes('PRIVADO'), false);
+});
+
+test('el diagnóstico permite solo campos numéricos seguros y los límites inválidos no consultan SIMI', async () => {
+  const error = new adapter.SimiError('SIMI_NETWORK', 'TOKEN-SECRETO', {
+    page: 1, elapsed_ms: 30, apiKey: 'TOKEN-SECRETO', url: 'https://example.com/TOKEN-SECRETO',
+  });
+  assert.deepEqual(adapter.safeDiagnostic(error), { code: 'SIMI_NETWORK', page: 1, elapsed_ms: 30 });
+  assert.deepEqual(adapter.safeDiagnostic(new Error('TOKEN-SECRETO')), { code: 'SIMI_UNEXPECTED' });
+  for (const options of [{ requestTimeoutMs: 999999 }, { totalTimeoutMs: 999999 }, { pageSize: NaN }, { apiKey: 'Basic token' }]) {
+    let called = false;
+    await assert.rejects(adapter.downloadCatalog({ apiKey: 'TEST', ...options, fetcher: async () => { called = true; } }), error => error.code === 'SIMI_CONFIG');
+    assert.equal(called, false);
+  }
 });

@@ -9,6 +9,7 @@
       this.results = document.querySelector('#simiPropertyResults');
       this.status = document.querySelector('#simiPropertyStatus');
       this.syncButton = document.querySelector('#simiSyncButton');
+      this.probeButton = document.querySelector('#simiProbeButton');
       this.input = form.elements.property;
       this.sequence = 0;
       this.syncing = false;
@@ -51,6 +52,7 @@
         if (button) this.select(button.dataset.simiCode);
       });
       this.syncButton.addEventListener('click', () => this.sync());
+      this.probeButton.addEventListener('click', () => this.probe());
       form.closest('dialog').addEventListener('close', () => this.cancelSearch());
     }
 
@@ -96,7 +98,9 @@
       const enabled = this.enabled();
       this.container.hidden = !enabled;
       this.syncButton.hidden = !enabled || this.getContext().profile?.role !== 'admin';
+      this.probeButton.hidden = this.syncButton.hidden;
       this.syncButton.disabled = this.syncing;
+      this.probeButton.disabled = this.syncing;
       this.results.replaceChildren();
       this.candidates.clear();
       this.status.textContent = 'Busca por código, barrio o conjunto. Se consulta el catálogo guardado, no SIMI en cada búsqueda.';
@@ -186,23 +190,45 @@
       this.status.textContent = 'Inmueble seleccionado. Su descripción se conservará en esta cita.';
     }
 
-    async sync() {
+    sync() { return this.runAction('sync'); }
+
+    probe() { return this.runAction('probe'); }
+
+    async runAction(action) {
       if (!this.enabled() || this.getContext().profile?.role !== 'admin' || this.syncing) return;
       this.cancelSearch();
       const sequence = this.sequence;
       this.syncing = true;
       this.syncButton.disabled = true;
-      this.status.textContent = 'Actualizando el catálogo mediante consultas de lectura a SIMI…';
+      this.probeButton.disabled = true;
+      this.status.textContent = action === 'probe'
+        ? 'Probando una consulta pequeña de lectura a SIMI, sin actualizar el catálogo…'
+        : 'Actualizando el catálogo mediante consultas de lectura a SIMI…';
       try {
-        const { data, error } = await this.client.functions.invoke('simi-catalog-sync', {
-          body: { appointment_subject: 'Visita comercial' },
-        });
+        // GET evita que una función antigua interprete la prueba como sincronización.
+        const options = action === 'probe'
+          ? { method: 'GET', headers: { 'x-simi-appointment-subject': 'Visita comercial' } }
+          : { body: { appointment_subject: 'Visita comercial' } };
+        const { data, error } = await this.client.functions.invoke('simi-catalog-sync', options);
         if (error) {
           let message = 'No fue posible actualizar el catálogo. Revisa la función y los secretos en Supabase.';
-          try { message = (await error.context.json()).error || message; } catch {}
+          try {
+            const payload = await error.context.json();
+            message = typeof payload.error === 'string' ? payload.error : message;
+            if (/^SIMI_[A-Z_]+$/.test(payload.code || '')) {
+              const page = Number.isInteger(payload.diagnostic?.page) ? `, página ${payload.diagnostic.page}` : '';
+              message = `${payload.code}${page}: ${message}`;
+            }
+          } catch {}
           throw new Error(message);
         }
         if (sequence !== this.sequence || !this.enabled()) return;
+        if (action === 'probe') {
+          this.status.textContent = data?.code === 'SIMI_OK'
+            ? 'Conexión con SIMI comprobada. Ahora puedes pulsar Actualizar catálogo. La prueba no cambió ningún inmueble.'
+            : 'La función necesita actualizarse para admitir esta prueba. El catálogo no se ha modificado.';
+          return;
+        }
         this.status.textContent = `Catálogo actualizado: ${Number(data?.count) || 0} inmuebles. SIMI no ha sido modificado.`;
         if (this.query.value.trim().length >= 2) await this.search();
       } catch (error) {
@@ -212,6 +238,7 @@
       } finally {
         this.syncing = false;
         this.syncButton.disabled = false;
+        this.probeButton.disabled = false;
       }
     }
   }
