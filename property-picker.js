@@ -13,6 +13,9 @@
       this.pauseButton = document.querySelector('#simiPauseButton');
       this.restartButton = document.querySelector('#simiRestartButton');
       this.inspectButton = document.querySelector('#simiInspectButton');
+      this.publishButton = document.querySelector('#simiPublishButton');
+      this.confirmedTotal = document.querySelector('#simiConfirmedTotal');
+      this.publicationReview = null;
       this.batchProgress = null;
       this.pauseRequested = false;
       this.input = form.elements.property;
@@ -59,6 +62,10 @@
       this.syncButton.addEventListener('click', () => this.sync());
       this.probeButton.addEventListener('click', () => this.probe());
       this.inspectButton.addEventListener('click', () => this.runAction('inspect'));
+      this.publishButton.addEventListener('click', () => this.runAction('publish'));
+      this.confirmedTotal.addEventListener('keydown', event => {
+        if (event.key === 'Enter') { event.preventDefault(); this.runAction('publish'); }
+      });
       this.pauseButton.addEventListener('click', () => {
         this.pauseRequested = true;
         this.pauseButton.disabled = true;
@@ -99,6 +106,8 @@
       this.results.replaceChildren();
       this.status.textContent = '';
       this.batchProgress = null;
+      this.publicationReview = null;
+      this.confirmedTotal.value = '';
       this.container.hidden = true;
       this.renderSelection();
       this.renderBatchProgress();
@@ -116,6 +125,10 @@
     updateContext() {
       this.cancelSearch();
       const enabled = this.enabled();
+      if (!enabled) {
+        this.publicationReview = null;
+        this.confirmedTotal.value = '';
+      }
       this.container.hidden = !enabled;
       this.syncButton.hidden = !enabled || this.getContext().profile?.role !== 'admin';
       this.probeButton.hidden = this.syncButton.hidden;
@@ -222,9 +235,14 @@
       this.batchProgress = {
         status: value.restart_required ? 'failed' : value.status, next_page: value.next_page, received: value.received,
         error_code: /^SIMI_[A-Z_]+$/.test(value.error_code || '') ? value.error_code : null,
+        snapshot_ref: /^[a-f0-9]{32}$/.test(value.snapshot_ref || '') ? value.snapshot_ref : null,
         total: Number.isInteger(value.total) && value.total > 0 ? value.total : null,
         total_pages: Number.isInteger(value.total_pages) && value.total_pages > 0 ? value.total_pages : null,
       };
+      if (!this.canPublish()) {
+        this.publicationReview = null;
+        this.confirmedTotal.value = '';
+      }
       this.renderBatchProgress();
       return true;
     }
@@ -236,8 +254,16 @@
       return `${count}${total ? ` de ${new Intl.NumberFormat('es-CO').format(total)}` : ''} inmuebles guardados · ${next_page - 1}${total_pages ? ` de ${total_pages}` : ''} páginas`;
     }
 
+    canPublish() {
+      const state = this.batchProgress;
+      const review = this.publicationReview;
+      return state?.status === 'failed' && state.error_code === 'SIMI_FORMAT' && state.total === null
+        && state.total_pages === null && state.snapshot_ref && review?.snapshot_ref === state.snapshot_ref
+        && review.next_page === state.next_page && review.received === state.received;
+    }
+
     renderBatchProgress() {
-      const working = this.syncing && !['probe', 'inspect'].includes(this.activeAction);
+      const working = this.syncing && !['probe', 'inspect', 'publish'].includes(this.activeAction);
       const allowed = this.enabled() && this.getContext().profile?.role === 'admin';
       document.querySelector('#simiBatchProgress').hidden = !allowed || (!this.batchProgress && !working);
       document.querySelector('#simiBatchLabel').textContent = this.progressLabel();
@@ -256,6 +282,9 @@
       this.restartButton.disabled = this.syncing;
       this.inspectButton.hidden = !allowed || this.batchProgress?.status !== 'failed' || this.batchProgress?.error_code !== 'SIMI_FORMAT';
       this.inspectButton.disabled = this.syncing;
+      document.querySelector('#simiPublicationTools').hidden = !allowed || !this.canPublish();
+      this.publishButton.disabled = this.syncing;
+      this.confirmedTotal.disabled = this.syncing;
       this.syncButton.textContent = ['pending', 'busy', 'waiting'].includes(this.batchProgress?.status)
         ? 'Continuar carga' : 'Actualizar catálogo';
     }
@@ -263,6 +292,21 @@
     async runAction(action) {
       if (!this.enabled() || this.getContext().profile?.role !== 'admin' || this.syncing) return;
       if (action === 'inspect' && (this.batchProgress?.status !== 'failed' || this.batchProgress?.error_code !== 'SIMI_FORMAT')) return;
+      let publication = null;
+      let publicationWaiting = false;
+      if (action === 'publish') {
+        if (!this.canPublish()) return;
+        const text = this.confirmedTotal.value.trim();
+        const count = Number(text);
+        if (!/^\d{1,5}$/.test(text) || count < 1 || count > 10000 || count !== this.batchProgress.received) {
+          this.status.textContent = 'El total que verificaste en SIMI debe coincidir exactamente con los inmuebles guardados. No se ha publicado nada.';
+          this.confirmedTotal.focus();
+          return;
+        }
+        if (!root.confirm(`¿Confirmas que verificaste ${count} inmuebles publicados en SIMI, sumando venta y arriendo sin filtros? Se revalidará el final y, si coincide, se reemplazará el catálogo de búsqueda. Las citas y SIMI no se modificarán.`)) return;
+        publication = { confirmed: true, confirmed_total: count, expected_snapshot: this.batchProgress.snapshot_ref,
+          expected_next_page: this.batchProgress.next_page };
+      }
       this.cancelSearch();
       const sequence = this.sequence;
       this.syncing = true;
@@ -274,7 +318,8 @@
       this.status.textContent = action === 'probe'
         ? 'Probando una consulta pequeña de lectura a SIMI, sin actualizar el catálogo…'
         : action === 'inspect' ? 'Revisando solo la página fallida. No se reiniciará ni publicará la carga…'
-          : 'Cargando un lote de SIMI. El avance se guardará página por página…';
+          : action === 'publish' ? 'Validando la última página guardada y el fin del listado antes de publicar…'
+            : 'Cargando un lote de SIMI. El avance se guardará página por página…';
       try {
         let previousPage = action !== 'restart' && ['pending', 'busy', 'waiting'].includes(this.batchProgress?.status)
           ? this.batchProgress.next_page : 1;
@@ -282,7 +327,8 @@
           if (sequence !== this.sequence || !this.enabled()) return;
           const options = action === 'probe'
             ? { method: 'GET', headers: { 'x-simi-appointment-subject': 'Visita comercial' } }
-            : { body: { appointment_subject: 'Visita comercial', sync_protocol: 'batch-v1', ...(['restart', 'inspect'].includes(action) ? { action } : {}) } };
+            : { body: { appointment_subject: 'Visita comercial', sync_protocol: 'batch-v1',
+              ...(['restart', 'inspect', 'publish'].includes(action) ? { action } : {}), ...(publication || {}) } };
           const { data, error } = await this.client.functions.invoke('simi-catalog-sync', options);
           if (sequence !== this.sequence || !this.enabled()) return;
           if (error) {
@@ -291,6 +337,8 @@
               const payload = await error.context.json();
               if (sequence !== this.sequence || !this.enabled()) return;
               this.setBatchProgress(payload.progress);
+              if (action === 'publish' && payload.code === 'SIMI_BATCH_BUSY'
+                && ['busy', 'waiting'].includes(payload.progress?.status) && this.canPublish()) publicationWaiting = true;
               message = typeof payload.error === 'string' ? payload.error : message;
               if (/^SIMI_[A-Z_]+$/.test(payload.code || '')) {
                 const page = Number.isInteger(payload.diagnostic?.page) ? `, página ${payload.diagnostic.page}` : '';
@@ -306,6 +354,7 @@
             return;
           }
           if (action === 'inspect') {
+            this.publicationReview = null;
             const descriptions = {
               valid_list: 'SIMI ahora entrega una lista válida. Aún debe validarse la reanudación.',
               empty_list: 'SIMI ahora entrega una lista vacía. Aún debe validarse el final del catálogo.',
@@ -320,10 +369,17 @@
             if (data?.code !== 'SIMI_INSPECTION' || !Object.hasOwn(descriptions, data.classification)) {
               throw new Error('La función necesita actualizarse para revisar la página fallida.');
             }
-            this.setBatchProgress(data.progress);
+            const reviewed = this.setBatchProgress(data.progress);
+            if (reviewed && ['no_results_notice', 'empty_list'].includes(data.classification) && this.batchProgress?.snapshot_ref) {
+              this.publicationReview = { ...this.batchProgress };
+              this.renderBatchProgress();
+            }
             const page = Number.isInteger(data.diagnostic?.page) ? `, página ${data.diagnostic.page}` : '';
             this.status.textContent = `SIMI_INSPECTION${page} · ${data.classification}: ${descriptions[data.classification]} El avance guardado y el catálogo anterior se conservan. No se ha publicado ni reiniciado la carga.`;
             return;
+          }
+          if (action === 'publish' && (data?.code !== 'SIMI_PUBLISHED' || data.status !== 'complete')) {
+            throw new Error('La función no confirmó la publicación de la carga guardada. Consulta el estado antes de reintentar.');
           }
           const hasProgress = this.setBatchProgress(data);
           if (data?.status === 'complete' || (!data?.status && Number.isInteger(data?.count))) {
@@ -343,6 +399,10 @@
           action = 'sync';
         }
       } catch (error) {
+        if (action === 'publish' && !publicationWaiting) {
+          this.publicationReview = null;
+          this.confirmedTotal.value = '';
+        }
         if (sequence === this.sequence && this.enabled()) {
           this.status.textContent = `${error.message || 'No fue posible actualizar el catálogo.'} Puedes utilizar la dirección manual.`;
           if (this.batchProgress?.status === 'pending') this.status.textContent += ` El avance se conserva desde la página ${this.batchProgress.next_page}.`;

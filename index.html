@@ -254,6 +254,8 @@
     .simi-progress strong { font-size: 12px; }
     .simi-progress p { margin: 0; font-size: 11px; color: var(--muted); }
     .simi-progress progress { width: 100%; height: 8px; accent-color: var(--accent); }
+    .simi-publication { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+    .simi-publication label { font-size: 11px; }
     .simi-tools .ghost { padding: 0 10px; font-size: 11px; }
     input, textarea { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--fg); }
     .password-control { position: relative; }
@@ -559,6 +561,12 @@
               <progress id="simiBatchBar" aria-label="Avance de la carga de inmuebles"></progress>
               <p>El avance se guarda por página. El catálogo anterior sigue disponible hasta completar la carga.</p>
               <div class="simi-tools"><button class="ghost" id="simiPauseButton" type="button" hidden>Pausar después del lote</button><button class="ghost" id="simiInspectButton" type="button" hidden>Revisar página fallida</button><button class="ghost" id="simiRestartButton" type="button" hidden>Reiniciar carga parcial</button></div>
+              <div class="simi-publication" id="simiPublicationTools" hidden>
+                <label for="simiConfirmedTotal">Total publicado que verificaste en SIMI (venta y arriendo, sin filtros)</label>
+                <input id="simiConfirmedTotal" type="text" inputmode="numeric" maxlength="5" autocomplete="off" placeholder="Escribe el total confirmado" aria-describedby="simiPublicationHint">
+                <p id="simiPublicationHint">No copies el avance sin comprobarlo en SIMI. Se validarán la última página guardada y la siguiente antes de publicar.</p>
+                <button class="ghost" id="simiPublishButton" type="button">Validar y publicar carga guardada</button>
+              </div>
             </div>
             <ul class="simi-results" id="simiPropertyResults" aria-label="Inmuebles encontrados" aria-busy="false"></ul>
             <div class="simi-selection" id="simiPropertySelection" hidden><strong id="simiSelectedCode"></strong><a id="simiPropertyLink" target="_blank" rel="noopener noreferrer">Ver inmueble</a></div>

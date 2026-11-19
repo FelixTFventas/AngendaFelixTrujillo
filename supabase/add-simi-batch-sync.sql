@@ -38,6 +38,7 @@ as $$
     'received', staged_count, 'total', expected_total, 'total_pages', expected_pages,
     'page_size', job_page_size, 'max_pages', job_max_pages, 'agency', job_agency,
     'error_code', job_error_code, 'restart_required', job_status = 'failed',
+    'snapshot_ref', md5(job_id::text),
     'retry_after', retry_after, 'last_synced_at', last_synced_at
   )
   from public.simi_catalog_sync_state where singleton;

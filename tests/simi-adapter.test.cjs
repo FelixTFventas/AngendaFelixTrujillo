@@ -521,3 +521,64 @@ test('el resumen de texto también admite envoltorios sin copiar valores descono
   }));
   assert.deepEqual(filtered, { code: 'SIMI_FORMAT' });
 });
+
+test('el cierre manual revalida solo páginas 32 y 33, sin volver a descargar los 628', async () => {
+  const rows = Array.from({ length: 8 }, (_, n) => row(`459-${621 + n}`, { propietario: 'PRIVADO' }));
+  const saved = rows.map(record => adapter.propertyFromSIMI(record));
+  for (const terminal of ['No se encontraron inmuebles.', { data: [] }]) {
+    const calls = [];
+    const result = await adapter.validateCatalogEnd({
+      apiKey: 'TEST', pageSize: 20, fetcher: async (url, options) => {
+        const page = Number(url.match(/\/limite\/(\d+)/)[1]);
+        calls.push(page);
+        assert.equal(options.method, 'GET');
+        assert.equal(new URL(url).protocol, 'https:');
+        assert.ok(url.includes('/total/20/'));
+        return json(page === 32 ? { data: [...rows].reverse() } : terminal);
+      },
+    }, { received: 628, next_page: 33, last_page_items: saved }, 628);
+    assert.deepEqual(calls, [32, 33]);
+    assert.equal(result.terminal_kind, typeof terminal === 'string' ? 'no_results_notice' : 'empty_list');
+    assert.equal(result.last_page_items.length, 8);
+    assert.equal(JSON.stringify(result).includes('PRIVADO'), false);
+  }
+});
+
+test('cualquier cambio de la última página bloquea el cierre antes de consultar el final', async () => {
+  for (const data of [[row('459-2')], [], [row(), row()], [row('459-1', { Barrio: 'Cambió' })]]) {
+    let calls = 0;
+    await assert.rejects(adapter.validateCatalogEnd({
+      apiKey: 'TEST', fetcher: async () => { calls += 1; return json({ data }); },
+    }, { received: 1, next_page: 2, last_page_items: [adapter.propertyFromSIMI(row())] }, 1),
+    error => error.code === 'SIMI_CHANGED');
+    assert.equal(calls, 1);
+  }
+});
+
+test('el cierre rechaza avisos desconocidos, errores, texto anidado y nuevas propiedades en la página terminal', async () => {
+  const unknowns = ['No hay inmuebles: PRIVADO', 'No autorizado', 'Too many requests', '',
+    { data: 'No hay inmuebles' }, JSON.stringify({ data: 'No hay inmuebles' }),
+    { response: false, data: [] }, { data: [row('459-2')] },
+    { data: [], totalInmuebles: 2, totalPagina: 1 }];
+  for (const terminal of unknowns) {
+    let calls = 0;
+    await assert.rejects(adapter.validateCatalogEnd({
+      apiKey: 'TEST', fetcher: async () => json(++calls === 1 ? { data: [row()] } : terminal),
+    }, { received: 1, next_page: 2, last_page_items: [adapter.propertyFromSIMI(row())] }, 1),
+    error => !error.message.includes('PRIVADO'));
+    assert.equal(calls, 2);
+  }
+});
+
+test('la confirmación incorrecta no consulta SIMI y un total nuevo del proveedor bloquea la publicación', async () => {
+  let calls = 0;
+  const progress = { received: 1, next_page: 2, last_page_items: [adapter.propertyFromSIMI(row())] };
+  await assert.rejects(adapter.validateCatalogEnd({
+    apiKey: 'TEST', fetcher: async () => { calls += 1; },
+  }, progress, 2), error => error.code === 'SIMI_PUBLICATION_CONFIRMATION');
+  assert.equal(calls, 0);
+  await assert.rejects(adapter.validateCatalogEnd({
+    apiKey: 'TEST', fetcher: async () => { calls += 1; return json({ data: [row()], totalInmuebles: 2, totalPagina: 2 }); },
+  }, progress, 1), error => error.code === 'SIMI_CHANGED');
+  assert.equal(calls, 1);
+});

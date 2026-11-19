@@ -999,3 +999,138 @@ test('un error de revisión no causa reintentos ni pierde los inmuebles guardado
     assert.equal(ui.query('#simiInspectButton').disabled, false);
   } finally { ui.dom.window.close(); }
 });
+
+async function reviewedPublication(count = 628) {
+  const ui = await workspace();
+  const progress = { status: 'failed', next_page: 33, received: count, total: null, total_pages: null,
+    error_code: 'SIMI_FORMAT', snapshot_ref: 'a'.repeat(32) };
+  ui.setFunctionResponse(async () => ({ error: { context: { json: async () => ({ error: 'Formato.', progress }) } } }));
+  await ui.click('#newAppointment');
+  await ui.change('#subject', 'Visita comercial');
+  await ui.click('#simiSyncButton');
+  assert.equal(ui.query('#simiPublicationTools').hidden, true);
+  ui.setFunctionResponse(async () => ({ data: { code: 'SIMI_INSPECTION', classification: 'no_results_notice',
+    diagnostic: { page: 33 }, progress } }));
+  await ui.click('#simiInspectButton');
+  return { ...ui, publicationProgress: progress };
+}
+
+test('el cierre requiere escribir el total independiente y confirmar; cancelar no hace consultas', async () => {
+  const ui = await reviewedPublication();
+  try {
+    assert.equal(ui.query('#simiPublicationTools').hidden, false);
+    assert.equal(ui.query('#simiConfirmedTotal').value, '', 'no se rellena con el contador descargado');
+    ui.window.confirm = () => { assert.fail('un total inválido no debe pedir confirmación'); };
+    for (const value of ['', '627', '10001', '628.0', '-628', 'PRIVADO']) {
+      ui.query('#simiConfirmedTotal').value = value;
+      await ui.click('#simiPublishButton');
+      assert.equal(ui.functionCalls.length, 2);
+    }
+    ui.query('#simiConfirmedTotal').value = '628';
+    ui.window.confirm = () => false;
+    await ui.click('#simiPublishButton');
+    assert.equal(ui.functionCalls.length, 2);
+    assert.ok(ui.query('#simiBatchLabel').textContent.includes('628'));
+  } finally { ui.dom.window.close(); }
+});
+
+test('publicar manda una sola confirmación ligada al trabajo revisado y muestra el catálogo completo', async () => {
+  for (const count of [628, 4]) {
+    const ui = await reviewedPublication(count);
+    try {
+      ui.window.confirm = message => { assert.ok(message.includes(String(count))); return true; };
+      ui.query('#simiConfirmedTotal').value = String(count);
+      ui.setFunctionResponse(async () => ({ data: { code: 'SIMI_PUBLISHED', status: 'complete', next_page: 33,
+        received: count, count, total: count, total_pages: 32, snapshot_ref: 'a'.repeat(32) } }));
+      await ui.click('#simiPublishButton');
+      assert.equal(ui.functionCalls.length, 3);
+      assert.deepEqual(ui.functionCalls.at(-1).args.body, {
+        appointment_subject: 'Visita comercial', sync_protocol: 'batch-v1', action: 'publish',
+        confirmed: true, confirmed_total: count, expected_snapshot: 'a'.repeat(32), expected_next_page: 33,
+      });
+      assert.ok(ui.query('#simiPropertyStatus').textContent.includes(`Catálogo completo publicado: ${count}`));
+      assert.equal(ui.query('#simiPublicationTools').hidden, true);
+      assert.equal(ui.query('#simiRestartButton').hidden, true);
+      assert.equal(ui.query('#simiBatchBar').value, 1);
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('un cambio de trabajo o de asunto invalida la revisión y oculta el cierre', async () => {
+  const ui = await reviewedPublication();
+  try {
+    ui.query('#simiConfirmedTotal').value = '628';
+    ui.setFunctionResponse(async () => ({ error: { context: { json: async () => ({
+      error: 'Otro trabajo.', progress: { ...ui.publicationProgress, snapshot_ref: 'b'.repeat(32) },
+    }) } } }));
+    await ui.click('#simiSyncButton');
+    assert.equal(ui.query('#simiPublicationTools').hidden, true);
+    assert.equal(ui.query('#simiConfirmedTotal').value, '');
+    const calls = ui.functionCalls.length;
+    await ui.click('#simiPublishButton');
+    assert.equal(ui.functionCalls.length, calls);
+    await ui.change('#subject', 'Entrega al arrendatario');
+    assert.equal(ui.query('#simiPublicationTools').hidden, true);
+  } finally { ui.dom.window.close(); }
+});
+
+test('un fallo al cerrar conserva el progreso, no reintenta y exige revisar otra vez antes de publicar', async () => {
+  const ui = await reviewedPublication();
+  try {
+    ui.window.confirm = () => true;
+    ui.query('#simiConfirmedTotal').value = '628';
+    ui.setFunctionResponse(async () => ({ error: { context: { json: async () => ({
+      error: 'La última página cambió.', code: 'SIMI_CHANGED', progress: ui.publicationProgress,
+    }) } } }));
+    await ui.click('#simiPublishButton');
+    assert.equal(ui.functionCalls.length, 3);
+    assert.ok(ui.query('#simiBatchLabel').textContent.includes('628'));
+    assert.ok(ui.query('#simiPropertyStatus').textContent.includes('SIMI_CHANGED'));
+    assert.equal(ui.query('#simiPublicationTools').hidden, true);
+    assert.equal(ui.query('#simiInspectButton').hidden, false);
+  } finally { ui.dom.window.close(); }
+});
+
+test('mientras publica bloquea otras acciones y no aplica una respuesta tardía a otro asunto', async () => {
+  const ui = await reviewedPublication();
+  try {
+    ui.window.confirm = () => true;
+    ui.query('#simiConfirmedTotal').value = '628';
+    let finish;
+    ui.setFunctionResponse(() => new Promise(resolve => { finish = resolve; }));
+    await ui.click('#simiPublishButton');
+    assert.equal(ui.query('#simiPublishButton').disabled, true);
+    assert.equal(ui.query('#simiConfirmedTotal').disabled, true);
+    assert.equal(ui.query('#simiPauseButton').hidden, true);
+    await ui.click('#simiInspectButton');
+    await ui.click('#simiSyncButton');
+    assert.equal(ui.functionCalls.length, 3);
+    await ui.change('#subject', 'Entrega al arrendatario');
+    finish({ data: { code: 'SIMI_PUBLISHED', status: 'complete', next_page: 33, received: 628, count: 628 } });
+    await settle();
+    assert.equal(ui.query('#simiPublicationTools').hidden, true);
+    assert.equal(ui.query('#simiPropertyStatus').textContent.includes('Catálogo completo publicado'), false);
+  } finally { ui.dom.window.close(); }
+});
+
+test('el minuto de espera conserva la confirmación revisada y no obliga a repetir la inspección', async () => {
+  const ui = await reviewedPublication();
+  try {
+    ui.window.confirm = () => true;
+    ui.query('#simiConfirmedTotal').value = '628';
+    ui.setFunctionResponse(async () => ({ error: { context: { json: async () => ({
+      error: 'Espera un minuto antes de publicar.', code: 'SIMI_BATCH_BUSY',
+      progress: { ...ui.publicationProgress, status: 'waiting', restart_required: true },
+    }) } } }));
+    await ui.click('#simiPublishButton');
+    assert.equal(ui.query('#simiPublicationTools').hidden, false);
+    assert.equal(ui.query('#simiConfirmedTotal').value, '628');
+    assert.equal(ui.functionCalls.length, 3);
+    ui.setFunctionResponse(async () => ({ data: { code: 'SIMI_PUBLISHED', status: 'complete', next_page: 33,
+      received: 628, count: 628, total: 628, total_pages: 32 } }));
+    await ui.click('#simiPublishButton');
+    assert.equal(ui.functionCalls.length, 4);
+    assert.equal(ui.functionCalls.at(-1).args.body.action, 'publish');
+    assert.ok(ui.query('#simiPropertyStatus').textContent.includes('Catálogo completo publicado: 628'));
+  } finally { ui.dom.window.close(); }
+});

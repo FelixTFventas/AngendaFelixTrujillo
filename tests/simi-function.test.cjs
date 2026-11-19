@@ -39,6 +39,12 @@ function setup(options = {}) {
         error: options.acquireError || (options.missingMigration ? {} : null),
       };
       if (name === 'acquire_simi_page_inspection') return { data: { ...currentProgress }, error: options.inspectionError || null };
+      if (name === 'acquire_simi_confirmed_publication') return { data: { ...currentProgress }, error: options.publicationError || null };
+      if (name === 'finish_simi_confirmed_publication') {
+        if (options.finishError) return { data: null, error: options.finishError };
+        currentProgress = { ...currentProgress, status: 'complete', error_code: null,
+          total: args.confirmed_total, total_pages: currentProgress.next_page - 1 };
+      }
       if (name === 'save_simi_sync_page') {
         currentProgress = { ...currentProgress, status: options.pending ? 'pending' : 'complete', next_page: 2, received: 1 };
       }
@@ -66,6 +72,11 @@ function setup(options = {}) {
       calls.push({ name: 'inspect', settings, page });
       if (options.inspectError) throw options.inspectError;
       return adapter.inspectPage({ ...settings, fetcher: async () => new Response(JSON.stringify(options.inspectPayload ?? 'No hay inmuebles')) }, page);
+    },
+    validateCatalogEnd: async (settings, progress, total) => {
+      calls.push({ name: 'validateEnd', settings, total });
+      if (options.validationError) throw options.validationError;
+      return { last_page_items: progress.last_page_items || [], terminal_kind: 'no_results_notice' };
     },
     SimiError: adapter.SimiError, safeDiagnostic: adapter.safeDiagnostic,
     console: { error: message => logs.push(JSON.parse(message)) },
@@ -314,4 +325,93 @@ test('un error durante la revisión libera la reserva y mantiene el fallo origin
   assert.equal(fixture.calls.at(-1).args.failure_code, 'SIMI_FORMAT');
   assert.equal(JSON.stringify(body).includes('PRIVADO'), false);
   assert.equal(JSON.stringify(fixture.logs).includes('PRIVADO'), false);
+});
+
+const publicationProgress = { ...failedPage, snapshot_ref: 'a'.repeat(32), last_page_items: [{ code: '459-628', title: 'NO-EXPONER' }] };
+const publicationBody = { appointment_subject: 'Visita comercial', sync_protocol: 'batch-v1', action: 'publish',
+  confirmed: true, confirmed_total: 628, expected_snapshot: 'a'.repeat(32), expected_next_page: 33 };
+
+test('publicar requiere confirmación explícita y un total numérico y referencia válidos', async () => {
+  for (const overrides of [{ confirmed: false }, { confirmed: undefined }, { confirmed_total: '628' },
+    { confirmed_total: 0 }, { confirmed_total: 10001 }, { confirmed_total: 1.5 },
+    { expected_snapshot: 'job-id' }, { expected_next_page: 0 }, { expected_next_page: 201 }]) {
+    const fixture = setup({ progress: publicationProgress });
+    assert.equal((await fixture.request({ ...publicationBody, ...overrides })).status, 400);
+    assert.equal(fixture.calls.length, 0);
+  }
+});
+
+test('solo un administrador activo puede cerrar manualmente; el programador no puede aprobar el total', async () => {
+  for (const options of [{ role: 'advisor' }, { role: 'supervisor' }, { active: false }, { mustChange: true }]) {
+    const fixture = setup(options);
+    assert.equal((await fixture.request(publicationBody)).status, 403);
+    assert.equal(fixture.calls.length, 0);
+  }
+  const secret = 'SECRETO-DE-PRUEBA-SOLO-LOCAL-1234567890';
+  const fixture = setup({ env: { SIMI_SYNC_SECRET: secret } });
+  assert.equal((await fixture.request(publicationBody, { 'x-simi-sync-secret': secret })).status, 403);
+  assert.equal(fixture.calls.length, 0);
+});
+
+test('el cierre revalida con parámetros guardados, audita al usuario autenticado y no revela inmuebles ni reservas', async () => {
+  const fixture = setup({ progress: publicationProgress, env: { SIMI_PAGE_SIZE: '100' } });
+  const response = await fixture.request({ ...publicationBody, confirmed_by: 'intruso', terminal_kind: 'empty_list' });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.code, 'SIMI_PUBLISHED');
+  assert.equal(body.count, 628);
+  assert.equal(body.status, 'complete');
+  assert.deepEqual(fixture.calls.map(call => call.name), ['acquire_simi_confirmed_publication', 'validateEnd', 'finish_simi_confirmed_publication']);
+  assert.equal(fixture.calls[1].settings.pageSize, 20);
+  assert.equal(fixture.calls[1].total, 628);
+  assert.equal(fixture.calls[2].args.confirmed_by, 'user');
+  assert.equal(fixture.calls[2].args.terminal_kind, 'no_results_notice');
+  for (const privateValue of ['job-id', 'lock-token', 'NO-EXPONER', '459-628', 'intruso']) {
+    assert.equal(JSON.stringify(body).includes(privateValue), false);
+    assert.equal(JSON.stringify(fixture.logs).includes(privateValue), false);
+  }
+});
+
+test('una publicación ya completada se reconoce sin repetir consultas a SIMI', async () => {
+  const fixture = setup({ progress: { ...publicationProgress, status: 'complete' } });
+  const response = await fixture.request(publicationBody);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).count, 628);
+  assert.deepEqual(fixture.calls.map(call => call.name), ['acquire_simi_confirmed_publication']);
+});
+
+test('una confirmación desactualizada, una reserva ocupada o migración ausente no valida ni publica', async () => {
+  for (const options of [
+    { progress: { ...publicationProgress, status: 'busy' } },
+    { progress: { ...publicationProgress, status: 'waiting' } },
+    { publicationError: { message: 'SIMI_SNAPSHOT_CHANGED', code: '22023' } },
+    { publicationError: { message: 'SIMI_JOB_EXPIRED', code: '22023' } },
+    { publicationError: { message: 'PRIVATE-DETAIL', code: 'PGRST202' } },
+  ]) {
+    const fixture = setup(options);
+    const response = await fixture.request(publicationBody);
+    assert.ok(response.status >= 400);
+    assert.equal(fixture.calls.some(call => call.name === 'validateEnd'), false);
+    assert.equal(JSON.stringify(await response.json()).includes('PRIVATE-DETAIL'), false);
+  }
+});
+
+test('si falla la revalidación o la publicación, conserva SIMI_FORMAT, libera la reserva y no reintenta', async () => {
+  for (const options of [
+    { validationError: new adapter.SimiError('SIMI_CHANGED', 'El listado cambió.', { page: 32, private: 'NO-EXPONER' }) },
+    { finishError: { message: 'SIMI_CHANGED', code: '22023' } },
+    { finishError: { message: 'NO-EXPONER', code: 'XX000' } },
+  ]) {
+    const fixture = setup({ progress: publicationProgress, ...options });
+    const response = await fixture.request(publicationBody);
+    const body = await response.json();
+    assert.ok(response.status >= 400);
+    assert.equal(body.progress.status, 'failed');
+    assert.equal(body.progress.received, 628);
+    assert.equal(body.progress.next_page, 33);
+    assert.equal(fixture.calls.at(-1).args.failure_code, 'SIMI_FORMAT');
+    assert.equal(fixture.calls.filter(call => call.name === 'validateEnd').length, 1);
+    assert.equal(JSON.stringify(body).includes('NO-EXPONER'), false);
+    assert.equal(JSON.stringify(fixture.logs).includes('NO-EXPONER'), false);
+  }
 });

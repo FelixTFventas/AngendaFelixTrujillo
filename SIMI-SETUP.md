@@ -127,6 +127,29 @@ Ninguna categoría publica ni reanuda automáticamente la descarga. El trabajo s
 
 Este diagnóstico exige una sesión de administrador activo y no está permitido al programador. La migración de lotes y `schema.sql` ya lo incluyen para instalaciones nuevas.
 
+### Publicar la carga guardada con un total confirmado en SIMI
+
+Si la revisión devuelve `no_results_notice` o `empty_list`, no hay totales del proveedor y el administrador verificó por separado el total publicado en SIMI (venta y arriendo, misma agencia y sin filtros adicionales), puede solicitar el cierre manual validado. **No se fija ningún número en el código**: el total se confirma para cada trabajo.
+
+Para habilitarlo después de instalar el diagnóstico:
+
+1. Ejecuta completo **`supabase/add-simi-confirmed-publication.sql`** en SQL Editor. Solo añade funciones y campos privados de auditoría; **ejecutarlo no publica, reinicia ni borra el avance**.
+2. Actualiza completos **`index.ts` y `simi.mjs`** en `simi-catalog-sync` y pulsa **Deploy updates**. No cambies secretos ni la configuración JWT.
+3. Publica el frontend actualizado y recarga la agenda.
+4. Como administrador, abre **Nueva cita → Visita comercial → Actualizar catálogo** para recuperar el estado detenido y después **Revisar página fallida**.
+5. Si la revisión indica que no hay resultados, aparece **Total publicado que verificaste en SIMI**. Escribe el total que comprobaste de forma independiente. No se rellena automáticamente con el contador descargado.
+6. Espera al menos un minuto después de la revisión. Pulsa **Validar y publicar carga guardada** y acepta la confirmación. No pulses **Reiniciar carga parcial**.
+
+El servidor comprueba el trabajo exacto que se revisó, la agencia original, su antigüedad máxima de 24 horas, el número real de registros temporales y la secuencia completa de páginas. Las páginas anteriores a la última deben tener el tamaño original. Un trabajo con otro error o con totales explícitos de SIMI no puede forzarse por esta vía.
+
+Se consultan solo **la última página guardada y la siguiente**, con el tamaño original. La primera debe coincidir en códigos y datos públicos con lo guardado; la siguiente debe entregar una lista vacía válida o una frase completa reconocida como aviso de “sin resultados”, recibida directamente como texto JSON. Los avisos anidados, texto desconocido, errores de permisos/cuota, nuevas propiedades, totales distintos y cambios de última página bloquean la publicación. No se vuelve a descargar todo el inventario.
+
+Solo tras esas comprobaciones se publica todo y se retiran del buscador los códigos ausentes, en una transacción. Se registra en el estado privado el total confirmado, la fecha y el administrador autenticado. Las citas históricas y SIMI no se modifican. Un fallo conserva el catálogo previo y los registros temporales; no hay reintentos automáticos. El bloqueo se comparte con inspección, sincronización y reinicio.
+
+La referencia de versión `snapshot_ref` solo vincula la confirmación con el trabajo revisado: no es una credencial ni permite acceder a las funciones SQL. Los identificadores del trabajo, las reservas y los registros de revalidación siguen siendo privados. Una confirmación vieja no se aplica a una descarga nueva aunque tenga el mismo número de inmuebles.
+
+El total confirmado manualmente y la revisión puntual del final no equivalen a una instantánea transaccional de todo SIMI. Si el inventario cambió durante la descarga, los totales no coinciden o el trabajo caducó, no fuerces la publicación. Las instalaciones nuevas ya incluyen este ajuste en `schema.sql`.
+
 ### Formatos de respuesta admitidos
 
 - Se aceptan arrays y objetos PHP solo cuando contienen registros con códigos de inmueble reconocibles; no se importan arrays arbitrarios de contactos.
@@ -161,6 +184,10 @@ El mensaje de la agenda incluye un código y, cuando corresponde, la página que
 | `SIMI_BATCH_BUSY` | Otra ejecución tiene el bloqueo, o aún no pasó el minuto de espera después de un fallo. |
 | `SIMI_JOB_FAILED` | La descarga parcial está detenida; si el error guardado es `SIMI_FORMAT`, revisa primero la página fallida. Otros fallos pueden exigir reinicio confirmado. El catálogo visible se conserva. |
 | `SIMI_INSPECTION_MIGRATION` | Falta ejecutar `supabase/add-simi-page-inspection.sql` para revisar la página fallida. |
+| `SIMI_PUBLICATION_MIGRATION` | Falta ejecutar `supabase/add-simi-confirmed-publication.sql` para habilitar el cierre manual validado. |
+| `SIMI_PUBLICATION_CONFIRMATION` | Falta una confirmación válida del total independiente y del trabajo revisado. |
+| `SIMI_PUBLICATION_UNAVAILABLE` | El trabajo no admite este cierre manual; no se anulan errores ni totales del proveedor. |
+| `SIMI_SNAPSHOT_CHANGED` | La descarga o el contador cambió desde la revisión. Recupera el estado y verifica nuevamente. |
 | `SIMI_INSPECTION_UNAVAILABLE` | El trabajo no está detenido por formato; no se consulta ninguna página. |
 | `SIMI_JOB_EXPIRED` | El trabajo tiene más de 24 horas o corresponde a otra agencia. No se valida como inventario actual. |
 

@@ -118,5 +118,7 @@ Para activar la sincronización reanudable, ejecuta además **`supabase/add-simi
 
 Si ya activaste los lotes y una página falla con `SIMI_FORMAT`, el diagnóstico manual sin perder avances requiere **`supabase/add-simi-page-inspection.sql`**, ambos archivos actualizados de la Edge Function y el frontend nuevo. Consulta **SIMI-SETUP.md → Revisar una página detenida**. No publica ni reinicia la carga, y no requiere cambiar secretos.
 
+Para cerrar una carga detenida con un aviso de “sin resultados” y un total publicado verificado independientemente en SIMI, ejecuta después **`supabase/add-simi-confirmed-publication.sql`** y publica la función y el frontend actualizados. El script no publica por sí solo: habilita la validación y confirmación del administrador. Consulta **SIMI-SETUP.md → Publicar la carga guardada**. `schema.sql` ya incluye este ajuste para instalaciones nuevas.
+
 ## Pruebas locales
 Con Node.js instalado, ejecuta `npm ci` y después `npm test`. Las pruebas comprueban periodos, filtros, acceso por rol, actualización de la interfaz y la función SQL en un PostgreSQL local en memoria. No se conectan al proyecto de Supabase ni modifican datos reales. Las dependencias de pruebas no son necesarias para publicar la aplicación estática.

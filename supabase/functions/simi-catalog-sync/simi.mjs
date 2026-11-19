@@ -70,7 +70,8 @@ function formatFailure(payload, reason = 'SIMI no devolvió un listado reconocib
   const description = Object.entries(responseShape).map(([key, type]) => `${key === 'root' ? 'raíz' : key}=${type}`).join(', ');
   const text = typeof textValue === 'string'
     ? { text_kind: classifyText(textValue), text_length: textValue.length } : {};
-  fail(code, `${reason} Estructura: ${description}. El catálogo anterior se conserva.`, { response_shape: responseShape, ...text });
+  fail(code, `${reason} Estructura: ${description}. El catálogo anterior se conserva.`,
+    { response_shape: responseShape, ...text, direct_text: typeof payload === 'string' && payload === textValue });
 }
 
 export function safeDiagnostic(error) {
@@ -393,6 +394,52 @@ export async function inspectPage(settings, page) {
     const diagnostic = safeDiagnostic(error);
     return { classification: diagnostic.text_kind || 'unrecognized_format', diagnostic };
   }
+}
+
+export async function validateCatalogEnd(settings, progress, confirmedTotal) {
+  const options = connectionOptions(settings);
+  const nextPage = progress?.next_page;
+  const saved = progress?.last_page_items;
+  if (!Number.isInteger(confirmedTotal) || confirmedTotal < 1 || confirmedTotal > 10000
+    || confirmedTotal !== progress?.received || !Number.isInteger(nextPage) || nextPage < 2 || nextPage > options.maxPages
+    || !Array.isArray(saved) || !saved.length || saved.length > options.pageSize) {
+    fail('SIMI_PUBLICATION_CONFIRMATION', 'El total confirmado o la última página guardada no son válidos.');
+  }
+  const startedAt = options.clock();
+  const lastPage = nextPage - 1;
+  const latest = await getPage(lastPage, options, startedAt);
+  if ((latest.total != null && latest.total !== confirmedTotal)
+    || (latest.pageCount != null && latest.pageCount !== lastPage)) {
+    fail('SIMI_CHANGED', 'SIMI informó totales distintos durante la validación. Se conserva la carga sin publicar.', { page: lastPage });
+  }
+  const properties = latest.rows.map(row => propertyFromSIMI(row, options.agency));
+  const byCode = new Map(saved.map(item => [item.code, item]));
+  const seen = new Set();
+  const fields = ['code', 'title', 'neighborhood', 'city', 'address', 'rental', 'sales', 'url'];
+  if (properties.length !== saved.length || byCode.size !== saved.length || properties.some(item => {
+    const previous = byCode.get(item.code);
+    if (seen.has(item.code) || !previous || fields.some(key => previous[key] !== item[key])) return true;
+    seen.add(item.code);
+    return false;
+  })) {
+    fail('SIMI_CHANGED', 'La última página cambió desde la descarga. El catálogo anterior y la carga guardada se conservan.', { page: lastPage });
+  }
+  let terminalKind;
+  try {
+    const terminal = await getPage(nextPage, options, startedAt);
+    if (terminal.rows.length || (terminal.total != null && terminal.total !== confirmedTotal)
+      || (terminal.pageCount != null && terminal.pageCount !== lastPage)) {
+      fail('SIMI_INCOMPLETE', 'SIMI todavía devuelve inmuebles o totales distintos después de la última página guardada.', { page: nextPage });
+    }
+    terminalKind = 'empty_list';
+  } catch (error) {
+    // Excepción explícita SOLO para este cierre manual con total confirmado.
+    // El importador normal sigue rechazando todo texto; no se aceptan avisos anidados.
+    if (!(error instanceof SimiError) || error.code !== 'SIMI_FORMAT'
+      || error.details.text_kind !== 'no_results_notice' || error.details.direct_text !== true) throw error;
+    terminalKind = 'no_results_notice';
+  }
+  return { last_page_items: properties, terminal_kind: terminalKind };
 }
 
 export async function downloadCatalog(settings) {

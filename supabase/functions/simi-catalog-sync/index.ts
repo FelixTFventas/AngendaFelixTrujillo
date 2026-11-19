@@ -1,5 +1,5 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
-import { downloadBatch, inspectPage, probeConnection, safeDiagnostic, SimiError } from './simi.mjs'
+import { downloadBatch, inspectPage, validateCatalogEnd, probeConnection, safeDiagnostic, SimiError } from './simi.mjs'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -24,6 +24,7 @@ Deno.serve(async (request) => {
   let batchToken: string | null = null
   let progress: Record<string, unknown> | null = null
   let action = 'sync'
+  let callerId: string | null = null
   const admin = createClient(
     Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     { auth: { autoRefreshToken: false, persistSession: false } },
@@ -35,6 +36,7 @@ Deno.serve(async (request) => {
       if (!token) return json({ error: 'Sesión no válida.' }, 401)
       const { data, error } = await admin.auth.getUser(token)
       if (error || !data.user) return json({ error: 'Sesión no válida.' }, 401)
+      callerId = data.user.id
       const { data: caller } = await admin.from('profiles')
         .select('role, active, must_change_password').eq('id', data.user.id).single()
       if (!caller?.active || caller.must_change_password || caller.role !== 'admin') {
@@ -47,14 +49,20 @@ Deno.serve(async (request) => {
     if (body.appointment_subject !== 'Visita comercial') {
       return json({ error: 'El catálogo solo se consulta para Visita comercial.' }, 400)
     }
-    if (body.action != null && !['sync', 'probe', 'restart', 'status', 'inspect'].includes(body.action)) {
+    if (body.action != null && !['sync', 'probe', 'restart', 'status', 'inspect', 'publish'].includes(body.action)) {
       return json({ error: 'Acción no válida.' }, 400)
     }
     action = body.action || 'sync'
-    if (['sync', 'restart', 'inspect'].includes(action) && body.sync_protocol !== 'batch-v1') {
+    if (['sync', 'restart', 'inspect', 'publish'].includes(action) && body.sync_protocol !== 'batch-v1') {
       return json({ error: 'Recarga la agenda actualizada para usar la carga por lotes.', code: 'SIMI_CLIENT_UPDATE' }, 409)
     }
-    if (scheduled && ['restart', 'inspect'].includes(action)) return json({ error: 'Esta acción requiere una sesión de administrador.' }, 403)
+    if (scheduled && ['restart', 'inspect', 'publish'].includes(action)) return json({ error: 'Esta acción requiere una sesión de administrador.' }, 403)
+    if (action === 'publish' && (body.confirmed !== true || !Number.isSafeInteger(body.confirmed_total)
+      || body.confirmed_total < 1 || body.confirmed_total > 10000
+      || typeof body.expected_snapshot !== 'string' || !/^[a-f0-9]{32}$/.test(body.expected_snapshot)
+      || !Number.isSafeInteger(body.expected_next_page) || body.expected_next_page < 2 || body.expected_next_page > 200)) {
+      return json({ code: 'SIMI_PUBLICATION_CONFIRMATION', error: 'Confirma el total verificado en SIMI y el estado actual antes de publicar.' }, 400)
+    }
     if (action === 'status') {
       const { data, error } = await admin.rpc('simi_batch_progress')
       if (error) return migrationRequired()
@@ -73,6 +81,33 @@ Deno.serve(async (request) => {
     }
     if (action === 'probe') {
       return json({ ...await probeConnection(settings), message: 'Conexión de lectura con SIMI comprobada. El catálogo no se ha modificado.' })
+    }
+    if (action === 'publish') {
+      const { data, error } = await admin.rpc('acquire_simi_confirmed_publication', {
+        requested_agency: settings.agency, confirmed_total: body.confirmed_total,
+        expected_snapshot: body.expected_snapshot, expected_next_page: body.expected_next_page,
+      })
+      if (error) throw publicationError(error)
+      progress = data
+      if (progress && ['busy', 'waiting'].includes(String(progress.status))) return pausedResponse(progress)
+      if (progress?.status === 'complete') return json({ code: 'SIMI_PUBLISHED', ...clientProgress(progress), count: progress.received })
+      batchToken = typeof progress?.batch_token === 'string' ? progress.batch_token : null
+      if (!batchToken || typeof progress?.job_id !== 'string') throw new SimiError('SIMI_SAVE', 'No se pudo reservar la validación de publicación.')
+      const evidence = await validateCatalogEnd({
+        ...settings, pageSize: Number(progress.page_size), maxPages: Number(progress.max_pages), agency: String(progress.agency),
+      }, progress, body.confirmed_total)
+      const { data: published, error: publishError } = await admin.rpc('finish_simi_confirmed_publication', {
+        batch_token: batchToken, sync_job: progress.job_id, confirmed_total: body.confirmed_total,
+        last_page_items: evidence.last_page_items, terminal_kind: evidence.terminal_kind, confirmed_by: callerId,
+      })
+      if (publishError) throw publicationError(publishError)
+      if (published?.status !== 'complete' || published.received !== body.confirmed_total) {
+        throw new SimiError('SIMI_SAVE', 'Supabase no confirmó la publicación. Consulta el estado antes de reintentar.')
+      }
+      progress = published
+      batchToken = null
+      return json({ code: 'SIMI_PUBLISHED', ...clientProgress(progress), count: published.received,
+        message: 'Carga guardada validada y publicada con confirmación del administrador. SIMI y las citas no han sido modificados.' })
     }
     if (action === 'inspect') {
       const { data, error } = await admin.rpc('acquire_simi_page_inspection', { requested_agency: settings.agency })
@@ -167,7 +202,7 @@ Deno.serve(async (request) => {
     if (batchToken) {
       try {
         const { data } = await admin.rpc('release_simi_sync_batch', {
-          batch_token: batchToken, failure_code: action === 'inspect' ? 'SIMI_FORMAT' : diagnostic.code,
+          batch_token: batchToken, failure_code: ['inspect', 'publish'].includes(action) ? 'SIMI_FORMAT' : diagnostic.code,
         })
         if (data) progress = data
       } catch {}
@@ -178,10 +213,29 @@ Deno.serve(async (request) => {
       ? error.message : 'No fue posible completar la operación. Revisa el diagnóstico seguro de la función.'
     const status = ['SIMI_TIMEOUT', 'SIMI_SYNC_TIMEOUT'].includes(diagnostic.code) ? 504
       : diagnostic.code === 'SIMI_RATE_LIMIT' ? 429
-        : ['SIMI_JOB_EXPIRED', 'SIMI_INSPECTION_UNAVAILABLE'].includes(diagnostic.code) ? 409 : 502
+        : ['SIMI_JOB_EXPIRED', 'SIMI_INSPECTION_UNAVAILABLE', 'SIMI_PUBLICATION_CONFIRMATION',
+          'SIMI_PUBLICATION_UNAVAILABLE', 'SIMI_SNAPSHOT_CHANGED', 'SIMI_CHANGED', 'SIMI_INCOMPLETE'].includes(diagnostic.code) ? 409
+          : diagnostic.code === 'SIMI_PUBLICATION_MIGRATION' ? 503 : 502
     return json({ error: message, code: diagnostic.code, diagnostic, progress: clientProgress(progress) }, status)
   }
 })
+
+function publicationError(error: { code?: string; message?: string }) {
+  const messages: Record<string, string> = {
+    SIMI_PUBLICATION_CONFIRMATION: 'El total confirmado o los datos de validación no son válidos.',
+    SIMI_SNAPSHOT_CHANGED: 'La descarga o su total cambió. Recupera el estado actual y vuelve a confirmar el total sin reiniciar.',
+    SIMI_PUBLICATION_UNAVAILABLE: 'Este cierre manual solo admite una carga detenida por formato sin totales del proveedor.',
+    SIMI_JOB_EXPIRED: 'La carga tiene más de 24 horas o corresponde a otra agencia. No se publicó.',
+    SIMI_INCOMPLETE: 'Los registros guardados no coinciden con el total o faltan páginas. No se publicó.',
+    SIMI_CHANGED: 'La última página no coincide con la copia guardada. No se publicó.',
+    SIMI_BATCH_EXPIRED: 'La reserva expiró. Consulta el estado antes de reintentar.',
+  }
+  if (error.message && Object.hasOwn(messages, error.message)) return new SimiError(error.message, messages[error.message])
+  if (['PGRST202', '42883', '42703', '42501'].includes(error.code || '')) {
+    return new SimiError('SIMI_PUBLICATION_MIGRATION', 'Falta ejecutar supabase/add-simi-confirmed-publication.sql.')
+  }
+  return new SimiError('SIMI_SAVE', 'No se pudo confirmar la publicación en Supabase. El catálogo y el avance anterior se conservan.')
+}
 
 function migrationRequired() {
   return json({ error: 'Falta ejecutar supabase/add-simi-batch-sync.sql para activar la carga por lotes.', code: 'SIMI_BATCH_MIGRATION' }, 503)
@@ -193,6 +247,7 @@ function clientProgress(value: unknown) {
   const result: Record<string, unknown> = {}
   if (['idle', 'pending', 'complete', 'failed', 'busy', 'waiting'].includes(String(source.status))) result.status = source.status
   if (typeof source.restart_required === 'boolean') result.restart_required = source.restart_required
+  if (typeof source.snapshot_ref === 'string' && /^[a-f0-9]{32}$/.test(source.snapshot_ref)) result.snapshot_ref = source.snapshot_ref
   for (const key of ['next_page', 'received', 'total', 'total_pages']) {
     const number = source[key]
     if (number === null || (typeof number === 'number' && Number.isSafeInteger(number) && number >= 0)) result[key] = number
