@@ -82,8 +82,9 @@ begin
         'status', 'complete', 'received', (select count(*) from public.simi_property_catalog where active)
       );
     end if;
-    -- Solo se limpian restos privados de trabajos ya finalizados. Nunca el catálogo visible.
-    delete from public.simi_catalog_staging;
+    -- Solo se limpian restos privados del trabajo anterior, ya finalizado.
+    -- El filtro explícito mantiene la protección de Supabase contra DELETE sin WHERE.
+    delete from public.simi_catalog_staging where job_id = state.job_id;
     update public.simi_catalog_sync_state
     set job_id = gen_random_uuid(), job_status = 'pending', job_started_at = now(),
       next_page = 1, staged_count = 0, expected_total = null, expected_pages = null,

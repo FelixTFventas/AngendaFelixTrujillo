@@ -5,6 +5,7 @@ const { PGlite } = require('@electric-sql/pglite');
 const migration = readFileSync(require.resolve('../supabase/add-simi-batch-sync.sql'), 'utf8');
 const base = readFileSync(require.resolve('../supabase/add-simi-property-catalog.sql'), 'utf8');
 const schema = readFileSync(require.resolve('../supabase/schema.sql'), 'utf8');
+const cleanupFix = readFileSync(require.resolve('../supabase/fix-simi-batch-staging-cleanup.sql'), 'utf8');
 const property = n => ({
   code: `459-${n}`, title: `Apartamento ${n}`, neighborhood: 'Neiva', city: 'Neiva', address: '',
   rental: true, sales: false, url: `https://felixtrujillofalla.com/inmuebles/arriendo/detalle/459-${n}`,
@@ -66,6 +67,64 @@ test('el esquema y la migración coinciden; repetirla conserva una carga parcial
   assert.equal(state.next_page, 2);
   assert.equal(state.received, 1);
   assert.equal((await db.query('select count(*)::int as c from public.simi_catalog_staging')).rows[0].c, 1);
+  assert.deepEqual(await published(), ['459-100']);
+});
+
+test('la corrección coincide con el esquema y todas las eliminaciones de lotes tienen WHERE', () => {
+  const definition = cleanupFix.slice(cleanupFix.indexOf('create or replace function'), cleanupFix.indexOf('\nrevoke all')).trim();
+  assert.ok(migration.includes(definition));
+  assert.ok(schema.includes(definition));
+  for (const sql of [migration, cleanupFix]) {
+    const withoutComments = sql.replace(/--[^\n]*/g, '');
+    const deletes = withoutComments.match(/\bdelete\s+from\b[^;]*;/gi) || [];
+    assert.ok(deletes.length > 0);
+    for (const statement of deletes) assert.match(statement, /\bwhere\b/i);
+    assert.doesNotMatch(withoutComments, /\btruncate\b|\bsafeupdate\b/i);
+  }
+});
+
+test('el ajuste repara una instalación anterior y puede repetirse sin perder cursor ni permisos', async () => {
+  const job = await acquire();
+  await save(job, 1, [property(1)], 2, 2);
+  await release(job);
+  await db.exec('reset role');
+  const oldDefinition = cleanupFix.slice(cleanupFix.indexOf('create or replace function'), cleanupFix.indexOf('\nrevoke all'))
+    .replace('delete from public.simi_catalog_staging where job_id = state.job_id;', 'delete from public.simi_catalog_staging;');
+  await db.exec(oldDefinition);
+  const beforeFix = (await db.query('select public.simi_batch_progress() as p')).rows[0].p;
+  await db.exec(cleanupFix);
+  await db.exec(cleanupFix);
+  const afterFix = (await db.query('select public.simi_batch_progress() as p')).rows[0].p;
+  assert.deepEqual(afterFix, beforeFix);
+  assert.deepEqual(await published(), ['459-100']);
+  assert.equal((await db.query('select property from public.appointments where id = 1')).rows[0].property, 'Dirección histórica');
+  for (const role of ['anon', 'authenticated']) {
+    await db.exec(`reset role; set role ${role}`);
+    await assert.rejects(acquire(), error => error.code === '42501');
+  }
+  await db.exec('reset role; set role service_role');
+  const continued = await acquire();
+  assert.equal(continued.job_id, job.job_id);
+  assert.equal(continued.next_page, 2);
+  assert.equal((await save(continued, 2, [property(2)], 2, 2)).status, 'complete');
+});
+
+test('una reserva nueva solo limpia restos del trabajo anterior y no el catálogo publicado', async () => {
+  const previous = await acquire();
+  await save(previous, 1, [property(1)], 2, 2);
+  await release(previous);
+  const unrelated = '00000000-0000-0000-0000-000000000999';
+  await db.query(`insert into public.simi_catalog_staging (job_id, page_number, code, title, url, rental)
+    values ($1, 1, $2, $3, $4, true)`, [unrelated, property(2).code, property(2).title, property(2).url]);
+  await db.exec(`reset role;
+    update public.simi_catalog_sync_state set job_status = 'complete', last_synced_at = now() - interval '1 hour' where singleton;
+    set role service_role`);
+  const next = await acquire();
+  assert.notEqual(next.job_id, previous.job_id);
+  assert.equal(next.next_page, 1);
+  assert.equal(next.received, 0);
+  const leftovers = (await db.query('select job_id from public.simi_catalog_staging')).rows;
+  assert.deepEqual(leftovers, [{ job_id: unrelated }]);
   assert.deepEqual(await published(), ['459-100']);
 });
 

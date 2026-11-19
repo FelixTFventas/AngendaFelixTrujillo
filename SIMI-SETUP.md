@@ -79,6 +79,16 @@ Para pasar de descarga única a lotes, sigue **este orden**:
 
 Los clientes anteriores reciben `SIMI_CLIENT_UPDATE` y no empiezan otra descarga completa. Las funciones SQL antiguas de publicación completa quedan deshabilitadas para evitar que se mezclen dos métodos. No ejecutes otra vez el script base del catálogo después del script de lotes.
 
+### Corrección de `DELETE requires a WHERE clause`
+
+Si la agenda muestra `SIMI_SAVE: No se pudo reservar el lote` y los registros de PostgreSQL muestran `DELETE requires a WHERE clause`, la protección de Supabase bloqueó la limpieza temporal sin filtro de la primera versión por lotes.
+
+1. En **Supabase → SQL Editor → New query**, copia todo **`supabase/fix-simi-batch-staging-cleanup.sql`** y pulsa **Run**.
+2. Espera **Success. No rows returned**. Si aparece un error, detente y revisa ese mensaje.
+3. Regresa a la agenda como administrador → **Nueva cita → Visita comercial → Actualizar catálogo**.
+
+Este ajuste solo reemplaza la función de reserva; no descarga datos ni reinicia trabajos al ejecutarlo. Conserva el avance, el catálogo publicado y las citas, y mantiene la protección de Supabase activada. No requiere cambiar secretos, volver a desplegar la Edge Function ni publicar el frontend. La migración de lotes y el esquema de instalaciones nuevas ya incluyen la corrección.
+
 ### Pausar, continuar y reiniciar
 
 - La interfaz muestra cuántos inmuebles y páginas están confirmados en Supabase.
