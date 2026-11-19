@@ -97,11 +97,35 @@ Este ajuste solo reemplaza la función de reserva; no descarga datos ni reinicia
 - Cerrar el diálogo, cambiar a un asunto no comercial o cerrar sesión impide iniciar más lotes desde esa pestaña. La página en curso puede terminar y quedar guardada en el servidor.
 - Al volver a pulsar **Actualizar catálogo / Continuar carga**, el servidor retoma desde la siguiente página guardada, incluso desde otro dispositivo. El navegador nunca decide el cursor.
 - Tras un fallo de red o tiempo de espera, se conservan las páginas confirmadas y se espera al menos un minuto antes de reintentar.
-- Si SIMI cambia los totales, repite códigos o entrega datos inválidos, se exige **Reiniciar carga parcial** con confirmación. Solo se descartan los registros temporales de ese trabajo; no se vacía el catálogo visible ni se cambian citas.
+- Si SIMI cambia los totales, repite códigos o entrega datos inválidos, la carga se detiene. Para `SIMI_FORMAT`, usa primero **Revisar página fallida** sin borrar el avance. Cuando proceda reiniciar, **Reiniciar carga parcial** exige confirmación y solo descarta los registros temporales de ese trabajo; no vacía el catálogo visible ni cambia citas.
 - Un trabajo con más de 24 horas o con cambio de agencia exige reinicio para no mezclar inventarios de momentos o cuentas diferentes.
 - La publicación final y la retirada de códigos ausentes se hacen en una sola transacción al confirmar la última página. Si falla, sigue disponible el catálogo anterior.
 - **La descarga antigua que falló en la página 22 no guardaba páginas**: no es posible recuperarlas retroactivamente. La primera carga con esta versión empieza en la página 1; las siguientes interrupciones sí se reanudan.
 - Si hay un programador o un segundo administrador trabajando, pausar una pestaña no los detiene. El bloqueo evita trabajos simultáneos y todos continúan el mismo cursor.
+
+### Revisar una página detenida por `SIMI_FORMAT` sin perder el avance
+
+Si quedaron páginas guardadas y SIMI devuelve texto en la siguiente, **no pulses Reiniciar carga parcial** todavía. Una página corta o un texto de “sin resultados” no demuestra por sí solo que el catálogo esté completo, especialmente sin totales del proveedor.
+
+Para habilitar el diagnóstico en un proyecto existente:
+
+1. Ejecuta completo **`supabase/add-simi-page-inspection.sql`** en **SQL Editor → New query**. Solo añade una función de reserva: no reinicia el trabajo, no consulta SIMI ni modifica páginas guardadas.
+2. Reemplaza completos **`index.ts` y `simi.mjs`** en la Edge Function y pulsa **Deploy updates**. Conserva los secretos y la configuración JWT actuales.
+3. Publica el frontend actualizado y recarga la agenda.
+4. Como administrador, abre **Nueva cita → Visita comercial → Actualizar catálogo** para recuperar el estado fallido; después pulsa **Revisar página fallida** una sola vez.
+
+El diagnóstico consulta únicamente la página del cursor guardado, con el mismo tamaño de página y agencia originales. No acepta una página elegida por el navegador. Comparte el bloqueo con las otras acciones, permite una revisión por minuto y no ejecuta reintentos automáticos. Los trabajos de más de 24 horas o de otra agencia no se consultan para evitar validar una copia antigua.
+
+La respuesta muestra solo tipos, números y categorías predefinidas:
+
+- `no_results_notice`: frase completa reconocida como aviso de “sin resultados”; **no confirma** que sea el final oficial del inventario.
+- `auth_notice` / `rate_limit_notice`: aviso relacionado con autenticación o cuota; confirmar con soporte.
+- `empty_text` / `html_document` / `unknown_text` / `unrecognized_format`: respuesta vacía, HTML, texto desconocido o formato no reconocido.
+- `valid_list` / `empty_list`: en esta revisión SIMI entregó una lista válida o vacía.
+
+Ninguna categoría publica ni reanuda automáticamente la descarga. El trabajo sigue detenido, conserva sus registros temporales y el catálogo anterior permanece visible. Comparte únicamente el diagnóstico mostrado, nunca el cuerpo original de SIMI, contactos, claves o encabezados. Según el resultado se decidirá con soporte cómo validar el final o la reanudación sin borrar el avance.
+
+Este diagnóstico exige una sesión de administrador activo y no está permitido al programador. La migración de lotes y `schema.sql` ya lo incluyen para instalaciones nuevas.
 
 ### Formatos de respuesta admitidos
 
@@ -135,7 +159,10 @@ El mensaje de la agenda incluye un código y, cuando corresponde, la página que
 | `SIMI_BATCH_MIGRATION` | Falta aplicar la migración de carga por lotes. |
 | `SIMI_CLIENT_UPDATE` | Hay que publicar o recargar la agenda con el protocolo por lotes. |
 | `SIMI_BATCH_BUSY` | Otra ejecución tiene el bloqueo, o aún no pasó el minuto de espera después de un fallo. |
-| `SIMI_JOB_FAILED` | La descarga parcial requiere reinicio explícito; el catálogo visible se conserva. |
+| `SIMI_JOB_FAILED` | La descarga parcial está detenida; si el error guardado es `SIMI_FORMAT`, revisa primero la página fallida. Otros fallos pueden exigir reinicio confirmado. El catálogo visible se conserva. |
+| `SIMI_INSPECTION_MIGRATION` | Falta ejecutar `supabase/add-simi-page-inspection.sql` para revisar la página fallida. |
+| `SIMI_INSPECTION_UNAVAILABLE` | El trabajo no está detenido por formato; no se consulta ninguna página. |
+| `SIMI_JOB_EXPIRED` | El trabajo tiene más de 24 horas o corresponde a otra agencia. No se valida como inventario actual. |
 
 Que el servicio responda desde un computador **no demuestra** que admita conexiones autenticadas desde Supabase. El diagnóstico distingue esas situaciones; la causa real solo puede confirmarse al volver a probar la función con tu cuenta.
 

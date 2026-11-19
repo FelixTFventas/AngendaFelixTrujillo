@@ -116,5 +116,7 @@ Para activar el catálogo de solo lectura, sigue **[SIMI-SETUP.md](SIMI-SETUP.md
 
 Para activar la sincronización reanudable, ejecuta además **`supabase/add-simi-batch-sync.sql`** antes de desplegar la función y la agenda actualizadas. Si el catálogo ya existe, ejecuta únicamente esta nueva migración. Conserva las citas y el catálogo anterior, guarda cada página en una tabla privada y publica solo al completar la descarga. Las instalaciones nuevas ya incluyen la configuración en `supabase/schema.sql`.
 
+Si ya activaste los lotes y una página falla con `SIMI_FORMAT`, el diagnóstico manual sin perder avances requiere **`supabase/add-simi-page-inspection.sql`**, ambos archivos actualizados de la Edge Function y el frontend nuevo. Consulta **SIMI-SETUP.md → Revisar una página detenida**. No publica ni reinicia la carga, y no requiere cambiar secretos.
+
 ## Pruebas locales
 Con Node.js instalado, ejecuta `npm ci` y después `npm test`. Las pruebas comprueban periodos, filtros, acceso por rol, actualización de la interfaz y la función SQL en un PostgreSQL local en memoria. No se conectan al proyecto de Supabase ni modifican datos reales. Las dependencias de pruebas no son necesarias para publicar la aplicación estática.

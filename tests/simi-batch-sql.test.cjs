@@ -6,6 +6,7 @@ const migration = readFileSync(require.resolve('../supabase/add-simi-batch-sync.
 const base = readFileSync(require.resolve('../supabase/add-simi-property-catalog.sql'), 'utf8');
 const schema = readFileSync(require.resolve('../supabase/schema.sql'), 'utf8');
 const cleanupFix = readFileSync(require.resolve('../supabase/fix-simi-batch-staging-cleanup.sql'), 'utf8');
+const inspectionMigration = readFileSync(require.resolve('../supabase/add-simi-page-inspection.sql'), 'utf8');
 const property = n => ({
   code: `459-${n}`, title: `Apartamento ${n}`, neighborhood: 'Neiva', city: 'Neiva', address: '',
   rental: true, sales: false, url: `https://felixtrujillofalla.com/inmuebles/arriendo/detalle/459-${n}`,
@@ -54,6 +55,9 @@ async function allowRetry() {
 }
 async function published() {
   return (await db.query('select code from public.simi_property_catalog where active order by code')).rows.map(row => row.code);
+}
+async function inspect(agency = '459') {
+  return (await db.query('select public.acquire_simi_page_inspection($1) as p', [agency])).rows[0].p;
 }
 
 test('el esquema y la migración coinciden; repetirla conserva una carga parcial', async () => {
@@ -272,4 +276,83 @@ test('la actualización programada espera seis horas, pero continúa un trabajo 
   assert.equal(result.status, 'pending');
   assert.equal(result.next_page, 2);
   assert.equal(result.job_id, job.job_id);
+});
+
+test('el SQL de inspección coincide con migración y esquema; repetirlo no modifica la descarga fallida', async () => {
+  const definition = inspectionMigration.slice(inspectionMigration.indexOf('create or replace function'), inspectionMigration.lastIndexOf('commit;')).trim();
+  assert.ok(migration.includes(definition));
+  assert.ok(schema.includes(definition));
+  const job = await acquire();
+  await save(job, 1, [property(1)], 2, 2);
+  await release(job, 'SIMI_FORMAT');
+  await db.exec('reset role');
+  const previous = (await db.query('select * from public.simi_catalog_sync_state')).rows[0];
+  await db.exec(inspectionMigration);
+  await db.exec(inspectionMigration);
+  assert.deepEqual((await db.query('select * from public.simi_catalog_sync_state')).rows[0], previous);
+  assert.equal((await db.query('select count(*)::int as c from public.simi_catalog_staging')).rows[0].c, 1);
+  assert.deepEqual(await published(), ['459-100']);
+  assert.equal((await db.query('select property from public.appointments where id = 1')).rows[0].property, 'Dirección histórica');
+});
+
+test('la inspección conserva el cursor y comparte bloqueo y enfriamiento sin reabrir ni publicar', async () => {
+  const job = await acquire();
+  await save(job, 1, [property(1)], 2, 2);
+  await release(job, 'SIMI_FORMAT');
+  assert.equal((await inspect()).status, 'waiting');
+  await allowRetry();
+  const reserved = await inspect();
+  assert.equal(reserved.status, 'failed');
+  assert.equal(reserved.next_page, 2);
+  assert.equal(reserved.received, 1);
+  assert.equal(reserved.job_id, job.job_id);
+  assert.ok(reserved.batch_token);
+  assert.equal((await acquire()).status, 'busy');
+  assert.equal((await inspect()).status, 'busy');
+  assert.equal((await db.query('select public.reset_simi_sync_job() as p')).rows[0].p.status, 'busy');
+  await assert.rejects(save(reserved, 2, [property(2)], 2, 2), error => error.code === '42501');
+  const released = await release(reserved, 'SIMI_FORMAT');
+  assert.equal(released.status, 'failed');
+  assert.equal(released.next_page, 2);
+  assert.equal(released.received, 1);
+  assert.equal((await inspect()).status, 'waiting');
+  assert.deepEqual(await published(), ['459-100']);
+  assert.equal((await db.query('select count(*)::int as c from public.simi_catalog_staging')).rows[0].c, 1);
+});
+
+test('una revisión interrumpida puede recuperarse tras expirar el bloqueo e invalida la reserva anterior', async () => {
+  const job = await acquire();
+  await save(job, 1, [property(1)], 2, 2);
+  await release(job, 'SIMI_FORMAT');
+  await allowRetry();
+  const first = await inspect();
+  await db.exec(`reset role; update public.simi_catalog_sync_state
+    set locked_until = now() - interval '1 second', retry_after = now() - interval '1 second' where singleton;
+    set role service_role`);
+  const second = await inspect();
+  assert.notEqual(first.batch_token, second.batch_token);
+  await release(first, 'SIMI_FORMAT');
+  assert.equal((await inspect()).status, 'busy', 'el token antiguo no libera la nueva revisión');
+  const result = await release(second, 'SIMI_FORMAT');
+  assert.equal(result.status, 'failed');
+  assert.equal(result.next_page, 2);
+});
+
+test('solo service_role revisa trabajos detenidos por formato, recientes y de la misma agencia', async () => {
+  await assert.rejects(inspect(), error => error.message === 'SIMI_INSPECTION_UNAVAILABLE');
+  const job = await acquire();
+  await save(job, 1, [property(1)], 2, 2);
+  await release(job);
+  await assert.rejects(inspect(), error => error.message === 'SIMI_INSPECTION_UNAVAILABLE');
+  await db.exec("reset role; update public.simi_catalog_sync_state set job_status = 'failed', job_error_code = 'SIMI_FORMAT' where singleton; set role service_role");
+  for (const role of ['anon', 'authenticated']) {
+    await db.exec(`reset role; set role ${role}`);
+    await assert.rejects(inspect(), error => error.code === '42501');
+  }
+  await db.exec('reset role; set role service_role');
+  await assert.rejects(inspect('123'), error => error.message === 'SIMI_JOB_EXPIRED');
+  await assert.rejects(inspect('invalid'), error => error.message === 'SIMI_CONFIG');
+  await db.exec("reset role; update public.simi_catalog_sync_state set job_started_at = now() - interval '25 hours' where singleton; set role service_role");
+  await assert.rejects(inspect(), error => error.message === 'SIMI_JOB_EXPIRED');
+  assert.deepEqual(await published(), ['459-100']);
 });

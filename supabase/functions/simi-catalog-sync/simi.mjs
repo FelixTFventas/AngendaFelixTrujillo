@@ -27,6 +27,20 @@ const shapePaths = [
   'response.Inmuebles', 'response.inmuebles',
 ];
 const shapeTypes = ['missing', 'null', 'array', 'object', 'string', 'number', 'boolean'];
+const textKinds = ['empty_text', 'no_results_notice', 'auth_notice', 'rate_limit_notice', 'html_document', 'unknown_text'];
+
+function classifyText(value) {
+  // Solo clasifica frases completas predefinidas. Nunca devuelve el texto original.
+  // Incluso un aviso de "sin resultados" NO se acepta como fin de catálogo.
+  if (value.length > 500) return 'unknown_text';
+  const text = value.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ');
+  if (!text) return 'empty_text';
+  if (/^(?:no se encontraron inmuebles|no se encontro ningun inmueble|no hay inmuebles|no existen inmuebles|sin inmuebles|no se encontraron resultados|sin resultados|no results found|no properties found)[.!]?$/.test(text)) return 'no_results_notice';
+  if (/^(?:no autorizado|acceso denegado|token invalido|token expirado|unauthorized|forbidden)[.!]?$/.test(text)) return 'auth_notice';
+  if (/^(?:demasiadas solicitudes|limite de consultas excedido|too many requests|rate limit exceeded)[.!]?$/.test(text)) return 'rate_limit_notice';
+  if (/^(?:<!doctype html\b|<html\b)/.test(text)) return 'html_document';
+  return 'unknown_text';
+}
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -51,10 +65,12 @@ function safeShape(payload) {
   return shape;
 }
 
-function formatFailure(payload, reason = 'SIMI no devolvió un listado reconocible.', code = 'SIMI_FORMAT') {
+function formatFailure(payload, reason = 'SIMI no devolvió un listado reconocible.', code = 'SIMI_FORMAT', textValue = payload) {
   const responseShape = safeShape(payload);
   const description = Object.entries(responseShape).map(([key, type]) => `${key === 'root' ? 'raíz' : key}=${type}`).join(', ');
-  fail(code, `${reason} Estructura: ${description}. El catálogo anterior se conserva.`, { response_shape: responseShape });
+  const text = typeof textValue === 'string'
+    ? { text_kind: classifyText(textValue), text_length: textValue.length } : {};
+  fail(code, `${reason} Estructura: ${description}. El catálogo anterior se conserva.`, { response_shape: responseShape, ...text });
 }
 
 export function safeDiagnostic(error) {
@@ -73,6 +89,9 @@ export function safeDiagnostic(error) {
       }
       diagnostic.response_shape = shape;
     }
+    if (textKinds.includes(error.details.text_kind)) diagnostic.text_kind = error.details.text_kind;
+    if (Number.isSafeInteger(error.details.text_length) && error.details.text_length >= 0
+      && error.details.text_length <= 5_000_000) diagnostic.text_length = error.details.text_length;
   }
   return diagnostic;
 }
@@ -143,7 +162,7 @@ export function parsePage(payload, requestedPage = null) {
   let decodings = 0;
   function decode(value) {
     if (typeof value !== 'string') return value;
-    if (decodings >= 2 || !/^[\s]*[[{]/.test(value)) formatFailure(original, 'SIMI devolvió texto en lugar de una colección.');
+    if (decodings >= 2 || !/^[\s]*[[{]/.test(value)) formatFailure(original, 'SIMI devolvió texto en lugar de una colección.', 'SIMI_FORMAT', value);
     decodings += 1;
     try { return JSON.parse(value); }
     catch { formatFailure(original, 'SIMI devolvió una colección codificada no válida.'); }
@@ -351,6 +370,29 @@ export async function probeConnection(settings) {
   // No se guardan registros ni se devuelven datos del inmueble o contactos.
   return { ok: true, code: 'SIMI_OK', sample_count: result.rows.length,
     elapsed_ms: Math.max(0, options.clock() - startedAt) };
+}
+
+export async function inspectPage(settings, page) {
+  const options = connectionOptions(settings);
+  if (!Number.isInteger(page) || page < 1 || page > options.maxPages) {
+    fail('SIMI_CONFIG', 'La página guardada no es válida para el diagnóstico.');
+  }
+  try {
+    const result = await getPage(page, options, options.clock());
+    const seen = new Set();
+    for (const row of result.rows) {
+      const property = propertyFromSIMI(row, options.agency);
+      if (seen.has(property.code)) fail('SIMI_DUPLICATE', 'La página de diagnóstico contiene códigos repetidos.', { page });
+      seen.add(property.code);
+    }
+    // No se devuelven ni guardan inmuebles; tampoco se certifica un final de catálogo.
+    return { classification: result.rows.length ? 'valid_list' : 'empty_list',
+      diagnostic: { code: 'SIMI_OK', page }, sample_count: result.rows.length };
+  } catch (error) {
+    if (!(error instanceof SimiError) || error.code !== 'SIMI_FORMAT') throw error;
+    const diagnostic = safeDiagnostic(error);
+    return { classification: diagnostic.text_kind || 'unrecognized_format', diagnostic };
+  }
 }
 
 export async function downloadCatalog(settings) {

@@ -1,5 +1,5 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
-import { downloadBatch, probeConnection, safeDiagnostic, SimiError } from './simi.mjs'
+import { downloadBatch, inspectPage, probeConnection, safeDiagnostic, SimiError } from './simi.mjs'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -47,14 +47,14 @@ Deno.serve(async (request) => {
     if (body.appointment_subject !== 'Visita comercial') {
       return json({ error: 'El catálogo solo se consulta para Visita comercial.' }, 400)
     }
-    if (body.action != null && !['sync', 'probe', 'restart', 'status'].includes(body.action)) {
+    if (body.action != null && !['sync', 'probe', 'restart', 'status', 'inspect'].includes(body.action)) {
       return json({ error: 'Acción no válida.' }, 400)
     }
     action = body.action || 'sync'
-    if (['sync', 'restart'].includes(action) && body.sync_protocol !== 'batch-v1') {
+    if (['sync', 'restart', 'inspect'].includes(action) && body.sync_protocol !== 'batch-v1') {
       return json({ error: 'Recarga la agenda actualizada para usar la carga por lotes.', code: 'SIMI_CLIENT_UPDATE' }, 409)
     }
-    if (scheduled && action === 'restart') return json({ error: 'Reiniciar requiere una sesión de administrador.' }, 403)
+    if (scheduled && ['restart', 'inspect'].includes(action)) return json({ error: 'Esta acción requiere una sesión de administrador.' }, 403)
     if (action === 'status') {
       const { data, error } = await admin.rpc('simi_batch_progress')
       if (error) return migrationRequired()
@@ -73,6 +73,41 @@ Deno.serve(async (request) => {
     }
     if (action === 'probe') {
       return json({ ...await probeConnection(settings), message: 'Conexión de lectura con SIMI comprobada. El catálogo no se ha modificado.' })
+    }
+    if (action === 'inspect') {
+      const { data, error } = await admin.rpc('acquire_simi_page_inspection', { requested_agency: settings.agency })
+      if (error) {
+        if (error.message === 'SIMI_JOB_EXPIRED') {
+          throw new SimiError('SIMI_JOB_EXPIRED', 'El trabajo tiene más de 24 horas o corresponde a otra agencia. No se revisará ni publicará esa copia antigua.')
+        }
+        if (error.message === 'SIMI_INSPECTION_UNAVAILABLE') {
+          throw new SimiError('SIMI_INSPECTION_UNAVAILABLE', 'Solo se puede revisar un trabajo detenido por SIMI_FORMAT. Consulta su estado actualizado sin reiniciarlo.')
+        }
+        if (error.message === 'SIMI_CONFIG') throw new SimiError('SIMI_CONFIG', 'Revisa la agencia configurada en Supabase.')
+        if (['PGRST202', '42883', '42501'].includes(error.code)) {
+          return json({ code: 'SIMI_INSPECTION_MIGRATION', error: 'Falta ejecutar supabase/add-simi-page-inspection.sql.' }, 503)
+        }
+        throw new SimiError('SIMI_SAVE', 'No se pudo reservar el diagnóstico. Se conserva la carga parcial.')
+      }
+      progress = data
+      if (progress && ['busy', 'waiting'].includes(String(progress.status))) return pausedResponse(progress)
+      batchToken = typeof progress?.batch_token === 'string' ? progress.batch_token : null
+      if (!batchToken || progress?.status !== 'failed' || progress.error_code !== 'SIMI_FORMAT') {
+        throw new SimiError('SIMI_SAVE', 'No se pudo obtener la página fallida para revisarla.')
+      }
+      const result = await inspectPage({
+        ...settings, pageSize: Number(progress.page_size), maxPages: Number(progress.max_pages),
+        agency: String(progress.agency),
+      }, Number(progress.next_page))
+      // El diagnóstico no guarda páginas ni reabre el trabajo, aunque SIMI ahora entregue una lista.
+      const { data: released, error: releaseError } = await admin.rpc('release_simi_sync_batch', {
+        batch_token: batchToken, failure_code: 'SIMI_FORMAT',
+      })
+      if (releaseError) throw new SimiError('SIMI_SAVE', 'La página se revisó, pero no se pudo liberar la reserva. Espera antes de reintentar.')
+      batchToken = null
+      progress = released
+      return json({ code: 'SIMI_INSPECTION', ...result, progress: clientProgress(progress),
+        message: 'Diagnóstico de una sola página. No se ha publicado, reiniciado ni reanudado la carga.' })
     }
     if (action === 'restart') {
       const { data, error } = await admin.rpc('reset_simi_sync_job')
@@ -132,7 +167,7 @@ Deno.serve(async (request) => {
     if (batchToken) {
       try {
         const { data } = await admin.rpc('release_simi_sync_batch', {
-          batch_token: batchToken, failure_code: diagnostic.code,
+          batch_token: batchToken, failure_code: action === 'inspect' ? 'SIMI_FORMAT' : diagnostic.code,
         })
         if (data) progress = data
       } catch {}
@@ -142,7 +177,8 @@ Deno.serve(async (request) => {
     const message = error instanceof SimiError
       ? error.message : 'No fue posible completar la operación. Revisa el diagnóstico seguro de la función.'
     const status = ['SIMI_TIMEOUT', 'SIMI_SYNC_TIMEOUT'].includes(diagnostic.code) ? 504
-      : diagnostic.code === 'SIMI_RATE_LIMIT' ? 429 : 502
+      : diagnostic.code === 'SIMI_RATE_LIMIT' ? 429
+        : ['SIMI_JOB_EXPIRED', 'SIMI_INSPECTION_UNAVAILABLE'].includes(diagnostic.code) ? 409 : 502
     return json({ error: message, code: diagnostic.code, diagnostic, progress: clientProgress(progress) }, status)
   }
 })
@@ -172,7 +208,9 @@ function clientProgress(value: unknown) {
 function pausedResponse(value: Record<string, unknown>) {
   const failed = value.status === 'failed'
   return json({
-    error: failed ? 'La carga parcial necesita reiniciarse. El catálogo anterior sigue disponible.'
+    error: failed ? value.error_code === 'SIMI_FORMAT'
+      ? 'La carga parcial está detenida por formato. Revisa la página fallida antes de reiniciarla; el avance y el catálogo anterior se conservan.'
+      : 'La carga parcial necesita reiniciarse. El catálogo anterior sigue disponible.'
       : value.status === 'waiting' ? 'Espera un minuto después del último fallo antes de continuar.'
         : 'Otro lote está en curso. El avance está guardado; espera antes de continuar.',
     code: failed ? 'SIMI_JOB_FAILED' : 'SIMI_BATCH_BUSY', progress: clientProgress(value),

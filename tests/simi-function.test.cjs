@@ -15,7 +15,7 @@ function setup(options = {}) {
   const logs = [];
   let currentProgress = {
     status: options.complete ? 'complete' : 'pending', next_page: 1, received: 0, total: 1, total_pages: 1,
-    job_id: 'job-id', batch_token: 'lock-token', page_size: 20, max_pages: 100, agency: '459',
+    job_id: 'job-id', batch_token: 'lock-token', page_size: 20, max_pages: 100, agency: '459', ...options.progress,
   };
   const env = {
     SUPABASE_URL: 'https://test.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'LOCAL-TEST',
@@ -38,6 +38,7 @@ function setup(options = {}) {
         data: { ...currentProgress, ...(options.busy ? { status: 'busy' } : {}) },
         error: options.acquireError || (options.missingMigration ? {} : null),
       };
+      if (name === 'acquire_simi_page_inspection') return { data: { ...currentProgress }, error: options.inspectionError || null };
       if (name === 'save_simi_sync_page') {
         currentProgress = { ...currentProgress, status: options.pending ? 'pending' : 'complete', next_page: 2, received: 1 };
       }
@@ -60,6 +61,11 @@ function setup(options = {}) {
       calls.push({ name: 'probe' });
       if (options.probeError) throw options.probeError;
       return { ok: true, code: 'SIMI_OK', sample_count: 1, elapsed_ms: 10 };
+    },
+    inspectPage: async (settings, page) => {
+      calls.push({ name: 'inspect', settings, page });
+      if (options.inspectError) throw options.inspectError;
+      return adapter.inspectPage({ ...settings, fetcher: async () => new Response(JSON.stringify(options.inspectPayload ?? 'No hay inmuebles')) }, page);
     },
     SimiError: adapter.SimiError, safeDiagnostic: adapter.safeDiagnostic,
     console: { error: message => logs.push(JSON.parse(message)) },
@@ -222,4 +228,90 @@ test('el programador usa seis horas entre catálogos nuevos y no puede reiniciar
   }, { 'x-simi-sync-secret': secret });
   assert.equal(response.status, 403);
   assert.equal(restart.calls.length, 0);
+});
+
+const inspectionBody = { appointment_subject: 'Visita comercial', sync_protocol: 'batch-v1', action: 'inspect' };
+const failedPage = { status: 'failed', error_code: 'SIMI_FORMAT', next_page: 33, received: 628, total: null, total_pages: null };
+
+test('la revisión usa solo el cursor y tamaño guardados, no las páginas enviadas por el cliente', async () => {
+  const fixture = setup({ progress: failedPage, env: { SIMI_PAGE_SIZE: '100' } });
+  const response = await fixture.request({ ...inspectionBody, next_page: 1, page_size: 1 });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.code, 'SIMI_INSPECTION');
+  assert.equal(body.classification, 'no_results_notice');
+  assert.equal(body.diagnostic.page, 33);
+  assert.equal(body.progress.received, 628);
+  assert.equal(body.progress.next_page, 33);
+  assert.equal(body.progress.status, 'failed');
+  assert.deepEqual(fixture.calls.map(call => call.name), ['acquire_simi_page_inspection', 'inspect', 'release_simi_sync_batch']);
+  assert.equal(fixture.calls[1].settings.pageSize, 20);
+  assert.equal(fixture.calls[1].page, 33);
+  assert.equal(fixture.calls[2].args.failure_code, 'SIMI_FORMAT');
+  assert.equal(JSON.stringify(body).includes('lock-token'), false);
+  assert.equal(JSON.stringify(body).includes('job-id'), false);
+  assert.equal(fixture.logs.length, 0);
+});
+
+test('la inspección no publica ni reanuda aunque la respuesta nueva sea una lista válida o vacía', async () => {
+  for (const inspectPayload of [{ data: [] }, { data: [{ Codigo_Inmueble: '459-1', Gestion: 'Arriendo', propietario: 'PRIVADO' }] }]) {
+    const fixture = setup({ progress: failedPage, inspectPayload });
+    const response = await fixture.request(inspectionBody);
+    const body = await response.json();
+    assert.equal(body.progress.status, 'failed');
+    assert.equal(body.progress.next_page, 33);
+    assert.equal(body.progress.received, 628);
+    assert.equal(JSON.stringify(body).includes('PRIVADO'), false);
+    assert.equal(JSON.stringify(body).includes('459-1'), false);
+    assert.equal(fixture.calls.some(call => ['download', 'save_simi_sync_page', 'reset_simi_sync_job'].includes(call.name)), false);
+  }
+});
+
+test('la revisión rechaza otros roles, programador y clientes sin protocolo antes de reservar', async () => {
+  for (const options of [{ role: 'advisor' }, { role: 'supervisor' }, { active: false }, { mustChange: true }]) {
+    const fixture = setup(options);
+    assert.equal((await fixture.request(inspectionBody)).status, 403);
+    assert.equal(fixture.calls.length, 0);
+  }
+  const secret = 'SECRETO-DE-PRUEBA-SOLO-LOCAL-1234567890';
+  const scheduled = setup({ env: { SIMI_SYNC_SECRET: secret } });
+  assert.equal((await scheduled.request(inspectionBody, { 'x-simi-sync-secret': secret })).status, 403);
+  assert.equal(scheduled.calls.length, 0);
+  const outdated = setup();
+  assert.equal((await outdated.request({ appointment_subject: 'Visita comercial', action: 'inspect' })).status, 409);
+  assert.equal(outdated.calls.length, 0);
+});
+
+test('una reserva ocupada, migración ausente o trabajo no elegible nunca consulta SIMI', async () => {
+  for (const options of [
+    { progress: { ...failedPage, status: 'busy' } },
+    { progress: { ...failedPage, status: 'waiting' } },
+    { inspectionError: { message: 'SIMI_INSPECTION_UNAVAILABLE', code: '22023' } },
+    { inspectionError: { message: 'SIMI_JOB_EXPIRED', code: '22023' } },
+    { inspectionError: { message: 'missing', code: 'PGRST202' } },
+  ]) {
+    const fixture = setup(options);
+    const response = await fixture.request(inspectionBody);
+    assert.ok(response.status >= 400);
+    assert.equal(fixture.calls.some(call => call.name === 'inspect'), false);
+    if (options.inspectionError?.code === 'PGRST202') {
+      const body = await response.json();
+      assert.equal(body.code, 'SIMI_INSPECTION_MIGRATION');
+      assert.ok(body.error.includes('add-simi-page-inspection.sql'));
+    }
+  }
+});
+
+test('un error durante la revisión libera la reserva y mantiene el fallo original sin filtrar información', async () => {
+  const fixture = setup({ progress: failedPage,
+    inspectError: new adapter.SimiError('SIMI_NETWORK', 'Error seguro.', { page: 33, raw: 'PRIVADO' }) });
+  const response = await fixture.request(inspectionBody);
+  const body = await response.json();
+  assert.equal(response.status, 502);
+  assert.equal(body.code, 'SIMI_NETWORK');
+  assert.equal(body.progress.received, 628);
+  assert.equal(body.progress.error_code, 'SIMI_FORMAT');
+  assert.equal(fixture.calls.at(-1).args.failure_code, 'SIMI_FORMAT');
+  assert.equal(JSON.stringify(body).includes('PRIVADO'), false);
+  assert.equal(JSON.stringify(fixture.logs).includes('PRIVADO'), false);
 });

@@ -12,6 +12,7 @@
       this.probeButton = document.querySelector('#simiProbeButton');
       this.pauseButton = document.querySelector('#simiPauseButton');
       this.restartButton = document.querySelector('#simiRestartButton');
+      this.inspectButton = document.querySelector('#simiInspectButton');
       this.batchProgress = null;
       this.pauseRequested = false;
       this.input = form.elements.property;
@@ -57,6 +58,7 @@
       });
       this.syncButton.addEventListener('click', () => this.sync());
       this.probeButton.addEventListener('click', () => this.probe());
+      this.inspectButton.addEventListener('click', () => this.runAction('inspect'));
       this.pauseButton.addEventListener('click', () => {
         this.pauseRequested = true;
         this.pauseButton.disabled = true;
@@ -219,6 +221,7 @@
         || !Number.isInteger(value.received) || value.received < 0 || value.received > 10000) return false;
       this.batchProgress = {
         status: value.restart_required ? 'failed' : value.status, next_page: value.next_page, received: value.received,
+        error_code: /^SIMI_[A-Z_]+$/.test(value.error_code || '') ? value.error_code : null,
         total: Number.isInteger(value.total) && value.total > 0 ? value.total : null,
         total_pages: Number.isInteger(value.total_pages) && value.total_pages > 0 ? value.total_pages : null,
       };
@@ -234,7 +237,7 @@
     }
 
     renderBatchProgress() {
-      const working = this.syncing && this.activeAction !== 'probe';
+      const working = this.syncing && !['probe', 'inspect'].includes(this.activeAction);
       const allowed = this.enabled() && this.getContext().profile?.role === 'admin';
       document.querySelector('#simiBatchProgress').hidden = !allowed || (!this.batchProgress && !working);
       document.querySelector('#simiBatchLabel').textContent = this.progressLabel();
@@ -251,12 +254,15 @@
       this.pauseButton.disabled = this.pauseRequested;
       this.restartButton.hidden = !allowed || this.batchProgress?.status !== 'failed';
       this.restartButton.disabled = this.syncing;
+      this.inspectButton.hidden = !allowed || this.batchProgress?.status !== 'failed' || this.batchProgress?.error_code !== 'SIMI_FORMAT';
+      this.inspectButton.disabled = this.syncing;
       this.syncButton.textContent = ['pending', 'busy', 'waiting'].includes(this.batchProgress?.status)
         ? 'Continuar carga' : 'Actualizar catálogo';
     }
 
     async runAction(action) {
       if (!this.enabled() || this.getContext().profile?.role !== 'admin' || this.syncing) return;
+      if (action === 'inspect' && (this.batchProgress?.status !== 'failed' || this.batchProgress?.error_code !== 'SIMI_FORMAT')) return;
       this.cancelSearch();
       const sequence = this.sequence;
       this.syncing = true;
@@ -267,7 +273,8 @@
       this.renderBatchProgress();
       this.status.textContent = action === 'probe'
         ? 'Probando una consulta pequeña de lectura a SIMI, sin actualizar el catálogo…'
-        : 'Cargando un lote de SIMI. El avance se guardará página por página…';
+        : action === 'inspect' ? 'Revisando solo la página fallida. No se reiniciará ni publicará la carga…'
+          : 'Cargando un lote de SIMI. El avance se guardará página por página…';
       try {
         let previousPage = action !== 'restart' && ['pending', 'busy', 'waiting'].includes(this.batchProgress?.status)
           ? this.batchProgress.next_page : 1;
@@ -275,13 +282,14 @@
           if (sequence !== this.sequence || !this.enabled()) return;
           const options = action === 'probe'
             ? { method: 'GET', headers: { 'x-simi-appointment-subject': 'Visita comercial' } }
-            : { body: { appointment_subject: 'Visita comercial', sync_protocol: 'batch-v1', ...(action === 'restart' ? { action } : {}) } };
+            : { body: { appointment_subject: 'Visita comercial', sync_protocol: 'batch-v1', ...(['restart', 'inspect'].includes(action) ? { action } : {}) } };
           const { data, error } = await this.client.functions.invoke('simi-catalog-sync', options);
           if (sequence !== this.sequence || !this.enabled()) return;
           if (error) {
             let message = 'No fue posible actualizar el catálogo. Revisa la función y los secretos en Supabase.';
             try {
               const payload = await error.context.json();
+              if (sequence !== this.sequence || !this.enabled()) return;
               this.setBatchProgress(payload.progress);
               message = typeof payload.error === 'string' ? payload.error : message;
               if (/^SIMI_[A-Z_]+$/.test(payload.code || '')) {
@@ -295,6 +303,26 @@
             this.status.textContent = data?.code === 'SIMI_OK'
               ? 'Conexión con SIMI comprobada. Ahora puedes pulsar Actualizar catálogo. La prueba no cambió ningún inmueble.'
               : 'La función necesita actualizarse para admitir esta prueba. El catálogo no se ha modificado.';
+            return;
+          }
+          if (action === 'inspect') {
+            const descriptions = {
+              valid_list: 'SIMI ahora entrega una lista válida. Aún debe validarse la reanudación.',
+              empty_list: 'SIMI ahora entrega una lista vacía. Aún debe validarse el final del catálogo.',
+              no_results_notice: 'SIMI entrega un aviso de “sin resultados”. Ese aviso por sí solo no confirma el final del catálogo.',
+              auth_notice: 'SIMI entrega un aviso relacionado con autenticación. Revisa los permisos con soporte.',
+              rate_limit_notice: 'SIMI entrega un aviso de cuota. No repitas consultas y revisa los límites con soporte.',
+              html_document: 'SIMI devuelve una página HTML en vez de la colección esperada.',
+              empty_text: 'SIMI devuelve texto vacío en vez de una colección.',
+              unknown_text: 'SIMI devuelve texto no reconocido. Se necesita confirmar su significado con soporte.',
+              unrecognized_format: 'SIMI devuelve un formato no reconocido.',
+            };
+            if (data?.code !== 'SIMI_INSPECTION' || !Object.hasOwn(descriptions, data.classification)) {
+              throw new Error('La función necesita actualizarse para revisar la página fallida.');
+            }
+            this.setBatchProgress(data.progress);
+            const page = Number.isInteger(data.diagnostic?.page) ? `, página ${data.diagnostic.page}` : '';
+            this.status.textContent = `SIMI_INSPECTION${page} · ${data.classification}: ${descriptions[data.classification]} El avance guardado y el catálogo anterior se conservan. No se ha publicado ni reiniciado la carga.`;
             return;
           }
           const hasProgress = this.setBatchProgress(data);

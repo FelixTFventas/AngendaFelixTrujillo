@@ -900,3 +900,102 @@ test('una actualización nueva puede empezar desde la primera página tras un ca
     assert.ok(ui.query('#simiPropertyStatus').textContent.includes('Catálogo completo publicado: 200'));
   } finally { ui.dom.window.close(); }
 });
+
+test('revisar una página fallida no reinicia, no encadena lotes y conserva el progreso', async () => {
+  const ui = await workspace();
+  const progress = { status: 'failed', next_page: 33, received: 628, error_code: 'SIMI_FORMAT' };
+  try {
+    ui.setFunctionResponse(async () => ({ error: { context: { json: async () => ({
+      error: 'La carga necesita revisión.', code: 'SIMI_JOB_FAILED', progress,
+    }) } } }));
+    await ui.click('#newAppointment');
+    await ui.change('#subject', 'Visita comercial');
+    assert.equal(ui.query('#simiInspectButton').hidden, true);
+    await ui.click('#simiSyncButton');
+    assert.equal(ui.query('#simiInspectButton').hidden, false);
+    ui.setFunctionResponse(async () => ({ data: {
+      code: 'SIMI_INSPECTION', classification: 'no_results_notice', diagnostic: { page: 33 }, progress,
+      raw: 'PRIVADO', message: 'PRIVADO',
+    } }));
+    await ui.click('#simiInspectButton');
+    assert.equal(ui.functionCalls.length, 2);
+    assert.deepEqual(ui.functionCalls[1].args.body, {
+      appointment_subject: 'Visita comercial', sync_protocol: 'batch-v1', action: 'inspect',
+    });
+    const status = ui.query('#simiPropertyStatus').textContent;
+    assert.ok(status.includes('página 33'));
+    assert.ok(status.includes('no_results_notice'));
+    assert.ok(status.includes('no confirma el final'));
+    assert.ok(status.includes('No se ha publicado ni reiniciado'));
+    assert.equal(status.includes('PRIVADO'), false);
+    assert.ok(ui.query('#simiBatchLabel').textContent.includes('628'));
+    assert.ok(ui.query('#simiBatchLabel').textContent.includes('32'));
+    assert.equal(ui.query('#simiRestartButton').hidden, false);
+    assert.equal(ui.query('#simiPauseButton').hidden, true);
+  } finally { ui.dom.window.close(); }
+});
+
+test('el diagnóstico está oculto a otros roles, otros fallos y asuntos no comerciales', async () => {
+  for (const role of ['admin', 'advisor', 'supervisor']) {
+    const ui = await workspace(role);
+    try {
+      ui.setFunctionResponse(async () => ({ error: { context: { json: async () => ({
+        error: 'Duplicados.', progress: { status: 'failed', next_page: 33, received: 628, error_code: 'SIMI_DUPLICATE' },
+      }) } } }));
+      await ui.click('#newAppointment');
+      await ui.change('#subject', 'Visita comercial');
+      if (role === 'admin') await ui.click('#simiSyncButton');
+      assert.equal(ui.query('#simiInspectButton').hidden, true);
+      await ui.click('#simiInspectButton');
+      assert.equal(ui.functionCalls.length, role === 'admin' ? 1 : 0);
+      await ui.change('#subject', 'Entrega al arrendatario');
+      assert.equal(ui.query('#simiInspectButton').hidden, true);
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('durante una revisión no se ejecutan otras acciones y una respuesta tardía no aparece en otro asunto', async () => {
+  const ui = await workspace();
+  try {
+    ui.setFunctionResponse(async () => ({ error: { context: { json: async () => ({
+      error: 'Formato.', progress: { status: 'failed', next_page: 33, received: 628, error_code: 'SIMI_FORMAT' },
+    }) } } }));
+    await ui.click('#newAppointment');
+    await ui.change('#subject', 'Visita comercial');
+    await ui.click('#simiSyncButton');
+    let finish;
+    ui.setFunctionResponse(() => new Promise(resolve => { finish = resolve; }));
+    await ui.click('#simiInspectButton');
+    assert.equal(ui.query('#simiInspectButton').disabled, true);
+    assert.equal(ui.query('#simiRestartButton').disabled, true);
+    await ui.click('#simiSyncButton');
+    await ui.click('#simiProbeButton');
+    await ui.click('#simiInspectButton');
+    assert.equal(ui.functionCalls.length, 2);
+    await ui.change('#subject', 'Entrega al arrendatario');
+    finish({ data: { code: 'SIMI_INSPECTION', classification: 'no_results_notice', diagnostic: { page: 33 } } });
+    await settle();
+    assert.equal(ui.query('#simiPropertyPicker').hidden, true);
+    assert.equal(ui.query('#simiInspectButton').hidden, true);
+    assert.equal(ui.query('#simiPropertyStatus').textContent.includes('SIMI_INSPECTION'), false);
+  } finally { ui.dom.window.close(); }
+});
+
+test('un error de revisión no causa reintentos ni pierde los inmuebles guardados', async () => {
+  const ui = await workspace();
+  try {
+    const progress = { status: 'failed', next_page: 33, received: 628, error_code: 'SIMI_FORMAT' };
+    ui.setFunctionResponse(async () => ({ error: { context: { json: async () => ({ error: 'Formato.', progress }) } } }));
+    await ui.click('#newAppointment');
+    await ui.change('#subject', 'Visita comercial');
+    await ui.click('#simiSyncButton');
+    ui.setFunctionResponse(async () => ({ error: { context: { json: async () => ({
+      error: 'Tiempo de espera agotado.', code: 'SIMI_TIMEOUT', diagnostic: { page: 33 }, progress,
+    }) } } }));
+    await ui.click('#simiInspectButton');
+    assert.equal(ui.functionCalls.length, 2);
+    assert.ok(ui.query('#simiBatchLabel').textContent.includes('628'));
+    assert.ok(ui.query('#simiPropertyStatus').textContent.includes('SIMI_TIMEOUT'));
+    assert.equal(ui.query('#simiInspectButton').disabled, false);
+  } finally { ui.dom.window.close(); }
+});

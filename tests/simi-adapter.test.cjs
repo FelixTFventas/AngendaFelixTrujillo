@@ -425,3 +425,99 @@ test('cambios de totales y confirmaciones sin cursor nuevo detienen el lote', as
     status: 'pending', next_page: 1, received: 0,
   })), error => error.code === 'SIMI_SAVE');
 });
+
+test('el diagnóstico consulta solo la página guardada y clasifica texto sin devolverlo', async () => {
+  for (const [text, kind] of [
+    ['No se encontraron inmuebles.', 'no_results_notice'],
+    ['  SIN RESULTADOS! ', 'no_results_notice'],
+    ['No autorizado', 'auth_notice'],
+    ['Token expirado.', 'auth_notice'],
+    ['Too many requests', 'rate_limit_notice'],
+    ['<!DOCTYPE html><html>PRIVADO</html>', 'html_document'],
+    ['  ', 'empty_text'],
+    ['No hay inmuebles: propietario PRIVADO token TEST-ONLY', 'unknown_text'],
+    ['Mensaje PRIVADO: TEST-ONLY', 'unknown_text'],
+    ['x'.repeat(501), 'unknown_text'],
+  ]) {
+    let calls = 0;
+    const result = await adapter.inspectPage({
+      apiKey: 'TEST-ONLY', pageSize: 20,
+      fetcher: async (url, options) => {
+        calls += 1;
+        assert.ok(url.includes('/limite/33/total/20/'));
+        assert.equal(options.method, 'GET');
+        assert.equal(options.redirect, 'manual');
+        return json(text);
+      },
+    }, 33);
+    assert.equal(calls, 1);
+    assert.equal(result.classification, kind);
+    assert.equal(result.diagnostic.code, 'SIMI_FORMAT');
+    assert.equal(result.diagnostic.page, 33);
+    assert.equal(result.diagnostic.text_length, text.length);
+    assert.deepEqual(result.diagnostic.response_shape, { root: 'string' });
+    assert.equal(JSON.stringify(result).includes('PRIVADO'), false);
+    assert.equal(JSON.stringify(result).includes('TEST-ONLY'), false);
+    assert.equal('properties' in result, false);
+    assert.throws(() => adapter.parsePage(text, 33), error => error.code === 'SIMI_FORMAT',
+      'clasificar un aviso no lo convierte en un catálogo vacío');
+  }
+});
+
+test('un lote nunca confirma una página de texto aunque parezca un aviso de fin', async () => {
+  let calls = 0;
+  await assert.rejects(adapter.downloadBatch({
+    apiKey: 'TEST', fetcher: async () => { calls += 1; return json('No se encontraron inmuebles.'); },
+  }, { status: 'pending', next_page: 33, received: 628 }, async () => {
+    assert.fail('un aviso no debe guardarse como página vacía ni publicar el catálogo');
+  }), error => error.code === 'SIMI_FORMAT' && error.details.page === 33);
+  assert.equal(calls, 1);
+});
+
+test('la inspección valida listas pero no expone inmuebles ni contactos', async () => {
+  for (const rows of [[], [row('459-1', { propietario: 'PRIVADO' })]]) {
+    const result = await adapter.inspectPage({
+      apiKey: 'TEST', fetcher: async () => json({ data: rows }),
+    }, 33);
+    assert.equal(result.classification, rows.length ? 'valid_list' : 'empty_list');
+    assert.equal(result.sample_count, rows.length);
+    assert.deepEqual(result.diagnostic, { code: 'SIMI_OK', page: 33 });
+    assert.equal(JSON.stringify(result).includes('459-1'), false);
+    assert.equal(JSON.stringify(result).includes('PRIVADO'), false);
+  }
+  for (const rows of [[row(), row()], [row('123-1')]]) {
+    await assert.rejects(adapter.inspectPage({ apiKey: 'TEST', fetcher: async () => json({ data: rows }) }, 33));
+  }
+});
+
+test('la inspección conserva seguridad HTTPS, límites y errores de transporte sin reintentos', async () => {
+  let calls = 0;
+  for (const page of [0, 101, NaN, 1.5]) {
+    await assert.rejects(adapter.inspectPage({
+      apiKey: 'TEST', fetcher: async () => { calls += 1; },
+    }, page), error => error.code === 'SIMI_CONFIG');
+  }
+  assert.equal(calls, 0);
+  for (const [status, code] of [[401, 'SIMI_AUTH'], [429, 'SIMI_RATE_LIMIT']]) {
+    await assert.rejects(adapter.inspectPage({
+      apiKey: 'TEST', fetcher: async () => { calls += 1; return new Response('PRIVADO', { status }); },
+    }, 33), error => error.code === code && !error.message.includes('PRIVADO'));
+  }
+  assert.equal(calls, 2);
+  await assert.rejects(adapter.inspectPage({
+    apiKey: 'TEST', fetcher: async () => new Response(null, { status: 302, headers: { location: 'https://evil.example/' } }),
+  }, 33), error => error.code === 'SIMI_REDIRECT');
+});
+
+test('el resumen de texto también admite envoltorios sin copiar valores desconocidos', async () => {
+  const result = await adapter.inspectPage({
+    apiKey: 'TEST', fetcher: async () => json({ data: 'No hay inmuebles', propietario: 'PRIVADO' }),
+  }, 33);
+  assert.equal(result.classification, 'no_results_notice');
+  assert.deepEqual(result.diagnostic.response_shape, { root: 'object', data: 'string' });
+  assert.equal(JSON.stringify(result).includes('PRIVADO'), false);
+  const filtered = adapter.safeDiagnostic(new adapter.SimiError('SIMI_FORMAT', 'PRIVADO', {
+    text_kind: 'PRIVADO', text_length: -1, raw: 'PRIVADO',
+  }));
+  assert.deepEqual(filtered, { code: 'SIMI_FORMAT' });
+});
