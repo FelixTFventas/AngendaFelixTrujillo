@@ -6,6 +6,11 @@ const roleLabels = { admin: 'Administrador', supervisor: 'Supervisora', advisor:
 const statusLabel = { pending: 'Pendiente', confirmed: 'Confirmada', completed: 'Realizada', cancelled: 'Cancelada' };
 
 let appointments = [];
+let appointmentsRequest = 0;
+let appointmentsSession = 0;
+let appointmentWriteRequest = 0;
+let appointmentSaving = false;
+const APPOINTMENTS_PAGE_SIZE = 500;
 let advisors = [];
 let appointmentCreators = new Map();
 let reservedAdvisorColors = new Set();
@@ -137,10 +142,14 @@ function mapAppointment(row) {
 }
 
 async function startSession(user) {
+  resetAppointments();
+  const session = appointmentsSession;
+  currentProfile = null;
   propertyPicker.reset();
   resetDashboard();
   currentUser = user;
   const { data: profile, error } = await supabaseClient.from('profiles').select('*').eq('id', user.id).single();
+  if (session !== appointmentsSession) return;
   if (error || !profile) {
     await supabaseClient.auth.signOut();
     loginForm.elements.password.value = '';
@@ -180,8 +189,10 @@ async function startSession(user) {
 }
 
 async function activateWorkspace() {
+  const session = appointmentsSession;
   document.querySelectorAll('.dashboard-only').forEach(control => { control.hidden = !window.AppointmentDashboard.canView(currentProfile); });
   await Promise.all([loadAdvisors(), loadAppointments(), loadAppointmentCreators()]);
+  if (session !== appointmentsSession || !currentProfile?.active || currentProfile.must_change_password) return;
   setAdvisorOptions(advisorFilter, 'all', 'all', true);
   renderAdvisors();
   render();
@@ -189,6 +200,7 @@ async function activateWorkspace() {
 }
 
 function showAuth(message = '') {
+  resetAppointments();
   propertyPicker.reset();
   resetDashboard();
   currentProfile = null;
@@ -199,8 +211,22 @@ function showAuth(message = '') {
   loginMessage.textContent = message;
 }
 
+function resetAppointments() {
+  appointmentsSession += 1;
+  appointmentsRequest += 1;
+  appointments = [];
+  if (appointmentSaving) {
+    appointmentWriteRequest += 1;
+    appointmentSaving = false;
+    setBusy(appointmentForm, false);
+  }
+  render();
+}
+
 async function loadAdvisors() {
+  const session = appointmentsSession;
   const { data, error } = await supabaseClient.rpc('list_advisors');
+  if (session !== appointmentsSession) return;
   if (error) {
     advisors = [];
     showToast(readableError(error, 'No fue posible cargar los asesores.'));
@@ -216,23 +242,57 @@ async function loadAdvisors() {
 }
 
 async function loadAppointments() {
-  const { data, error } = await supabaseClient
-    .from('appointments')
-    .select('*')
-    .order('appointment_date')
-    .order('appointment_time');
-  if (error) {
-    appointments = [];
-    showToast(readableError(error, 'No fue posible cargar las citas.'));
-    return;
+  if (!currentProfile?.active || currentProfile.must_change_password) return false;
+  const request = ++appointmentsRequest;
+  const session = appointmentsSession;
+  const isCurrent = () => request === appointmentsRequest && session === appointmentsSession;
+  const rows = [];
+  const seen = new Set();
+  let total = null;
+  try {
+    for (;;) {
+      const offset = rows.length;
+      const { data, count, error } = await supabaseClient
+        .from('appointments')
+        .select('*', { count: 'exact' })
+        .order('appointment_date')
+        .order('appointment_time')
+        .order('id')
+        .range(offset, offset + APPOINTMENTS_PAGE_SIZE - 1);
+      if (!isCurrent()) return false;
+      if (error) throw error;
+      if (!Array.isArray(data) || !Number.isSafeInteger(count) || count < 0
+        || (total !== null && count !== total) || offset + data.length > count
+        || (!data.length && offset < count)) {
+        throw new Error('La lectura de citas está incompleta o cambió durante la actualización.');
+      }
+      total = count;
+      for (const row of data) {
+        if (!row || typeof row.id !== 'string' || !row.id || seen.has(row.id)) {
+          throw new Error('La lectura de citas contiene registros repetidos o no válidos.');
+        }
+        seen.add(row.id);
+        rows.push(row);
+      }
+      // Avanzar por las filas recibidas también admite un límite de servidor menor.
+      if (rows.length === total) break;
+    }
+    if (!isCurrent()) return false;
+    // Solo reemplazar la agenda al tener la lectura completa, nunca con una página parcial.
+    appointments = rows.map(mapAppointment);
+    render();
+    invalidateDashboard();
+    return true;
+  } catch {
+    if (isCurrent()) showToast('No fue posible actualizar la agenda completa. Se conserva la última lista disponible; vuelve a recargar la agenda.');
+    return false;
   }
-  appointments = (data || []).map(mapAppointment);
-  render();
-  invalidateDashboard();
 }
 
 async function loadAppointmentCreators() {
+  const session = appointmentsSession;
   const { data, error } = await supabaseClient.rpc('list_appointment_creators');
+  if (session !== appointmentsSession) return;
   if (error) {
     appointmentCreators = new Map(currentProfile ? [[currentProfile.id, currentProfile.full_name]] : []);
     showToast(readableError(error, 'No fue posible cargar los usuarios que crearon las citas.'));
@@ -243,10 +303,14 @@ async function loadAppointmentCreators() {
 }
 
 function subscribeToAppointments() {
+  const session = appointmentsSession;
   if (appointmentsChannel) supabaseClient.removeChannel(appointmentsChannel);
   appointmentsChannel = supabaseClient
     .channel('appointments-live')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => Promise.all([loadAppointments(), loadAppointmentCreators()]))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => {
+      if (session !== appointmentsSession || !currentProfile?.active || currentProfile.must_change_password) return Promise.resolve();
+      return Promise.all([loadAppointments(), loadAppointmentCreators()]);
+    })
     .subscribe();
 }
 
@@ -575,6 +639,7 @@ function openDetails(id) {
 
 async function saveAppointment(event) {
   event.preventDefault();
+  if (appointmentSaving || !currentProfile?.active || currentProfile.must_change_password) return;
   const existingId = appointmentForm.elements.id.value;
   const existing = appointments.find(appointment => appointment.id === existingId);
   const payload = {
@@ -627,12 +692,26 @@ async function saveAppointment(event) {
     payload.simi_property_url = selectedProperty?.url || null;
   }
 
+  const session = appointmentsSession;
+  const write = ++appointmentWriteRequest;
+  appointmentSaving = true;
   setBusy(appointmentForm, true);
-  const query = existingId
-    ? supabaseClient.from('appointments').update(payload).eq('id', existingId)
-    : supabaseClient.from('appointments').insert(payload);
-  const { data, error } = await query.select().single();
-  setBusy(appointmentForm, false);
+  let data;
+  let error;
+  try {
+    const query = existingId
+      ? supabaseClient.from('appointments').update(payload).eq('id', existingId)
+      : supabaseClient.from('appointments').insert(payload);
+    ({ data, error } = await query.select().single());
+  } catch (failure) {
+    error = failure;
+  } finally {
+    if (write === appointmentWriteRequest) {
+      setBusy(appointmentForm, false);
+      appointmentSaving = false;
+    }
+  }
+  if (session !== appointmentsSession || write !== appointmentWriteRequest) return;
   if (error) {
     if (['PGRST204', '42703'].includes(error.code) && /simi_property_(code|url)/i.test(error.message || '')) {
       showToast('Falta ejecutar supabase/add-simi-property-catalog.sql. Tu formulario se conserva; también puedes usar la dirección manual.');
@@ -644,6 +723,11 @@ async function saveAppointment(event) {
       : readableError(error));
     return;
   }
+  if (!data || typeof data.id !== 'string' || !data.id) {
+    showToast('El servidor no confirmó los datos de la cita. Verifica la agenda antes de volver a guardarla para evitar duplicados.');
+    return;
+  }
+  appointmentsRequest += 1;
   const saved = mapAppointment(data);
   const index = appointments.findIndex(item => item.id === saved.id);
   if (index >= 0) appointments[index] = saved; else appointments.push(saved);
@@ -653,22 +737,27 @@ async function saveAppointment(event) {
   render();
   invalidateDashboard();
   showToast(existingId ? 'Los cambios fueron guardados.' : 'La cita quedó guardada en la agenda.');
+  void loadAppointments();
 }
 
 async function deleteAppointment() {
   const appointment = appointments.find(item => item.id === activeAppointmentId);
   if (!appointment || !canDeleteAppointment(appointment) || !window.confirm(`¿Eliminar la cita "${appointment.subject}"? Esta acción no se puede deshacer.`)) return;
+  const session = appointmentsSession;
   const { error } = await supabaseClient.from('appointments').delete().eq('id', appointment.id);
+  if (session !== appointmentsSession) return;
   if (error) {
     showToast(readableError(error));
     return;
   }
+  appointmentsRequest += 1;
   appointments = appointments.filter(item => item.id !== appointment.id);
   detailDialog.close();
   activeAppointmentId = null;
   render();
   invalidateDashboard();
   showToast('La cita fue eliminada.');
+  void loadAppointments();
 }
 
 function showSection(section) {
@@ -951,11 +1040,18 @@ loginForm.addEventListener('submit', async event => {
 });
 
 document.querySelector('#logoutButton').addEventListener('click', async () => {
-  if (appointmentsChannel) await supabaseClient.removeChannel(appointmentsChannel);
-  await supabaseClient.auth.signOut();
+  const channel = appointmentsChannel;
+  appointmentsChannel = null;
   showAuth();
-  loginForm.reset();
-  resetPasswordFields(loginForm);
+  setBusy(loginForm, true);
+  try {
+    if (channel) await supabaseClient.removeChannel(channel);
+    await supabaseClient.auth.signOut();
+    loginForm.reset();
+    resetPasswordFields(loginForm);
+  } finally {
+    setBusy(loginForm, false);
+  }
 });
 document.querySelector('#newAppointment').addEventListener('click', () => openAppointmentDialog());
 appointmentDialog.querySelector('.close').addEventListener('click', () => appointmentDialog.close());

@@ -120,5 +120,14 @@ Si ya activaste los lotes y una página falla con `SIMI_FORMAT`, el diagnóstico
 
 Para cerrar una carga detenida con un aviso de “sin resultados” y un total publicado verificado independientemente en SIMI, ejecuta después **`supabase/add-simi-confirmed-publication.sql`** y publica la función y el frontend actualizados. El script no publica por sí solo: habilita la validación y confirmación del administrador. Consulta **SIMI-SETUP.md → Publicar la carga guardada**. `schema.sql` ya incluye este ajuste para instalaciones nuevas.
 
+## Citas que desaparecían después de guardar al superar 1.000 registros
+
+La agenda ahora consulta las citas en páginas de 500 con conteo exacto y orden estable por fecha, hora e identificador. Continúa hasta recibir el total completo, incluso si el límite del servidor es menor. No sustituye la lista visible con páginas parciales ni la vacía cuando falla una actualización.
+
+Las respuestas antiguas se descartan al iniciar otra lectura, confirmar un guardado o eliminación, cambiar de sesión o cerrar sesión. Después de guardar se consulta de nuevo la agenda completa; no se repite la escritura de la cita. Los eventos de una sesión anterior tampoco pueden reactivar la carga.
+
+**Activación:** publicar el `app.js` actualizado y recargar la agenda con **Ctrl + F5**. No requiere SQL, Edge Functions nuevas, cambios de permisos ni modificaciones del catálogo SIMI. Las citas que ya existen en Supabase aparecerán al completar la lectura; no vuelvas a crearlas para evitar duplicados.
+
 ## Pruebas locales
+
 Con Node.js instalado, ejecuta `npm ci` y después `npm test`. Las pruebas comprueban periodos, filtros, acceso por rol, actualización de la interfaz y la función SQL en un PostgreSQL local en memoria. No se conectan al proyecto de Supabase ni modifican datos reales. Las dependencias de pruebas no son necesarias para publicar la aplicación estática.

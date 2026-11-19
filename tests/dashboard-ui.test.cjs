@@ -25,6 +25,14 @@ async function workspace(role = 'admin', options = {}) {
   const saved = [];
   const propertyCalls = [];
   const functionCalls = [];
+  const appointmentCalls = [];
+  const appointmentStore = [...(options.appointments || [])];
+  let appointmentResponse = async ({ from = 0, to = 499 }) => {
+    const rows = [...appointmentStore].sort((a, b) =>
+      a.appointment_date.localeCompare(b.appointment_date)
+      || a.appointment_time.localeCompare(b.appointment_time) || a.id.localeCompare(b.id));
+    return { data: rows.slice(from, Math.min(to + 1, from + (options.appointmentCap || 1000))), count: rows.length, error: null };
+  };
   let functionResponse = async () => options.syncResponse || { data: { count: 25 }, error: null };
   let propertyResponse = async () => ({ data: {
     properties: [{
@@ -43,23 +51,40 @@ async function workspace(role = 'admin', options = {}) {
     from: table => {
       let mutation;
       let selectedId;
+      const read = { from: 0, to: 999, orders: [], selectOptions: null };
       const query = {
-        select: () => query, order: () => query,
+        select: (columns, selectOptions) => { read.selectOptions = selectOptions; return query; },
+        order: column => { read.orders.push(column); return query; },
+        range: (from, to) => { read.from = from; read.to = to; return query; },
         eq: (column, value) => { if (column === 'id') selectedId = value; return query; },
         insert: payload => { mutation = { operation: 'insert', payload: { ...payload } }; return query; },
         update: payload => { mutation = { operation: 'update', payload: { ...payload } }; return query; },
+        delete: () => { mutation = { operation: 'delete' }; return query; },
         single: async () => {
           if (table === 'profiles') return { data: profile, error: null };
           if (mutation) {
             if (options.saveError) return { data: null, error: options.saveError };
+            if (options.saveThrow) throw options.saveThrow;
+            if (options.saveResponse) return options.saveResponse(mutation, selectedId, appointmentStore);
             saved.push(mutation);
-            return { data: { ...mutation.payload, id: selectedId || 'new-appointment',
-              advisor_name: 'Ana', advisor_team: 'sales', advisor_color: 'blue' }, error: null };
+            const previous = appointmentStore.find(row => row.id === selectedId);
+            const row = { ...previous, ...mutation.payload, id: selectedId || 'new-appointment',
+              advisor_name: 'Ana', advisor_team: 'sales', advisor_color: 'blue' };
+            const index = appointmentStore.findIndex(item => item.id === row.id);
+            if (index >= 0) appointmentStore[index] = row; else appointmentStore.push(row);
+            return { data: row, error: null };
           }
           return { data: null, error: null };
         },
-        then: (resolve, reject) => Promise.resolve({
-          data: table === 'appointments' ? options.appointments || [] : [], error: null,
+        then: (resolve, reject) => Promise.resolve().then(() => {
+          if (table !== 'appointments') return { data: [], error: null };
+          if (mutation?.operation === 'delete') {
+            const index = appointmentStore.findIndex(row => row.id === selectedId);
+            if (index >= 0) appointmentStore.splice(index, 1);
+            return { data: null, error: null };
+          }
+          appointmentCalls.push({ ...read, orders: [...read.orders], selectOptions: read.selectOptions ? { ...read.selectOptions } : null });
+          return appointmentResponse(read);
         }).then(resolve, reject),
       };
       return query;
@@ -102,10 +127,11 @@ async function workspace(role = 'admin', options = {}) {
     query(selector).dispatchEvent(new window.Event('change'));
     await settle();
   };
-  return { dom, window, query, click, change, calls, saved, profile, propertyCalls, functionCalls,
+  return { dom, window, query, click, change, calls, saved, profile, propertyCalls, functionCalls, appointmentCalls, appointmentStore,
+    setAppointmentResponse: callback => { appointmentResponse = callback; },
     setPropertyResponse: callback => { propertyResponse = callback; },
     setFunctionResponse: callback => { functionResponse = callback; },
-    setResponse: callback => { response = callback; }, realtime: () => realtime() };
+    setResponse: callback => { response = callback; }, realtime: () => realtime(), getRealtime: () => realtime };
 }
 
 test('admin y supervisora ven la pestaña; asesores gestores no acceden ni ejecutan RPC', async () => {
@@ -1132,5 +1158,252 @@ test('el minuto de espera conserva la confirmación revisada y no obliga a repet
     assert.equal(ui.functionCalls.length, 4);
     assert.equal(ui.functionCalls.at(-1).args.body.action, 'publish');
     assert.ok(ui.query('#simiPropertyStatus').textContent.includes('Catálogo completo publicado: 628'));
+  } finally { ui.dom.window.close(); }
+});
+
+function agendaRows(amount = 1018) {
+  return Array.from({ length: amount }, (_, index) => ({
+    ...oldAppointment, id: `appointment-${String(index + 1).padStart(6, '0')}`,
+    appointment_date: index < 1000 ? '2026-01-01' : '2026-11-24',
+    subject: 'Entrega al arrendatario', client: `Cliente de prueba ${index + 1}`,
+  }));
+}
+function storeResponse(ui) {
+  return ({ from, to }) => ({ data: [...ui.appointmentStore].sort((a, b) =>
+    a.appointment_date.localeCompare(b.appointment_date) || a.appointment_time.localeCompare(b.appointment_time)
+    || a.id.localeCompare(b.id)).slice(from, to + 1), count: ui.appointmentStore.length, error: null });
+}
+async function fillNewAppointment(ui, subject = 'Entrega al arrendatario') {
+  await ui.click('#newAppointment');
+  await ui.change('#subject', subject);
+  await ui.change('#team', 'sales');
+  await ui.change('#advisor', 'advisor');
+  await ui.change('#captureSource', 'WhatsApp');
+  ui.query('#date').value = '2026-11-24';
+  ui.query('#client').value = 'Cliente nuevo de prueba';
+}
+
+test('la agenda carga las 1018 citas con rangos explícitos y orden único estable', async () => {
+  const ui = await workspace('admin', { appointments: agendaRows(), advisors: appointmentAdvisors });
+  try {
+    assert.equal(ui.window.filteredAppointments().length, 1018);
+    assert.ok(ui.window.filteredAppointments().some(row => row.id === 'appointment-001018'));
+    assert.deepEqual(ui.appointmentCalls.map(call => [call.from, call.to]), [[0, 499], [500, 999], [1000, 1499]]);
+    for (const call of ui.appointmentCalls) {
+      assert.deepEqual(call.orders, ['appointment_date', 'appointment_time', 'id']);
+      assert.deepEqual(call.selectOptions, { count: 'exact' });
+    }
+  } finally { ui.dom.window.close(); }
+});
+
+test('también lee todo con un límite menor del servidor y no pide una página sobrante al completar el total', async () => {
+  for (const options of [{ amount: 1018, cap: 120, requests: 9 }, { amount: 1000, cap: 1000, requests: 2 }]) {
+    const ui = await workspace('admin', { appointments: agendaRows(options.amount), appointmentCap: options.cap });
+    try {
+      assert.equal(ui.window.filteredAppointments().length, options.amount);
+      assert.equal(ui.appointmentCalls.length, options.requests);
+      assert.equal(ui.appointmentCalls.at(-1).from, options.cap === 120 ? 960 : 500);
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('una cita nueva permanece visible tras la actualización en tiempo real cuando ya hay más de mil', async () => {
+  const ui = await workspace('admin', { appointments: agendaRows(), advisors: appointmentAdvisors });
+  try {
+    await fillNewAppointment(ui, 'Visita comercial');
+    await ui.window.saveAppointment({ preventDefault() {} });
+    await settle();
+    await ui.realtime();
+    assert.equal(ui.appointmentStore.length, 1019);
+    assert.equal(ui.window.filteredAppointments().length, 1019);
+    assert.ok(ui.window.filteredAppointments().some(row => row.id === 'new-appointment'));
+    assert.ok(ui.query('#agendaList').textContent.includes('Cliente nuevo de prueba'));
+    assert.equal(ui.saved.length, 1, 'no duplica el guardado para recuperar la visibilidad');
+  } finally { ui.dom.window.close(); }
+});
+
+test('una actualización anterior que termina después de guardar no borra la cita nueva ni muestra un fallo antiguo', async () => {
+  for (const response of [{ data: [], count: 0, error: null }, { data: null, error: { message: 'OLD_ERROR' } }]) {
+    const ui = await workspace('admin', { advisors: appointmentAdvisors });
+    try {
+      let finish;
+      ui.setAppointmentResponse(() => new Promise(resolve => { finish = resolve; }));
+      const oldLoad = ui.window.loadAppointments();
+      await settle();
+      ui.setAppointmentResponse(storeResponse(ui));
+      await fillNewAppointment(ui);
+      await ui.window.saveAppointment({ preventDefault() {} });
+      await settle();
+      finish(response);
+      assert.equal(await oldLoad, false);
+      assert.equal(ui.window.filteredAppointments().length, 1);
+      assert.equal(ui.window.filteredAppointments()[0].id, 'new-appointment');
+      assert.ok(ui.query('#agendaList').textContent.includes('Cliente nuevo de prueba'));
+      assert.equal(ui.query('#toast').textContent.includes('No fue posible actualizar'), false);
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('solo aplica la actualización más reciente y no mezcla páginas de dos solicitudes', async () => {
+  const ui = await workspace('admin', { appointments: [oldAppointment] });
+  try {
+    const rows = agendaRows();
+    let finish;
+    ui.setAppointmentResponse(({ from, to }) => from === 0
+      ? { data: rows.slice(from, to + 1), count: rows.length, error: null }
+      : new Promise(resolve => { finish = resolve; }));
+    const oldLoad = ui.window.loadAppointments();
+    await settle();
+    assert.equal(ui.window.filteredAppointments().length, 1, 'no sustituye la agenda con las primeras 500');
+    const fresh = { ...oldAppointment, id: 'fresh', subject: 'Recepción Propietario' };
+    ui.setAppointmentResponse(() => ({ data: [fresh], count: 1, error: null }));
+    assert.equal(await ui.window.loadAppointments(), true);
+    finish({ data: rows.slice(500, 1000), count: rows.length, error: null });
+    assert.equal(await oldLoad, false);
+    assert.deepEqual(Array.from(ui.window.filteredAppointments(), row => row.id), ['fresh']);
+  } finally { ui.dom.window.close(); }
+});
+
+test('un fallo de red o de una página posterior conserva la agenda anterior sin aplicar datos parciales', async () => {
+  for (const mode of ['throw', 'page_error', 'changed_count', 'duplicate', 'missing_count', 'early_empty']) {
+    const ui = await workspace('admin', { appointments: [oldAppointment] });
+    try {
+      const rows = agendaRows();
+      const calls = ui.appointmentCalls.length;
+      ui.setAppointmentResponse(({ from, to }) => {
+        if (mode === 'throw') throw new Error('TEST_NETWORK');
+        if (mode === 'missing_count') return { data: [], error: null };
+        if (mode === 'early_empty') return { data: [], count: 1018, error: null };
+        if (from === 0) return { data: rows.slice(from, to + 1), count: 1018, error: null };
+        if (mode === 'page_error') return { data: null, count: null, error: { message: 'TEST_PAGE_ERROR' } };
+        if (mode === 'changed_count') return { data: rows.slice(from, to + 1), count: 1019, error: null };
+        return { data: [rows[0]], count: 1018, error: null };
+      });
+      assert.equal(await ui.window.loadAppointments(), false);
+      assert.deepEqual(Array.from(ui.window.filteredAppointments(), row => row.id), ['old-appointment']);
+      assert.ok(ui.query('#toast').textContent.includes('Se conserva la última lista'));
+      assert.ok(ui.appointmentCalls.length - calls <= 2, 'no reintenta fallos ni sigue pidiendo páginas');
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('cerrar sesión invalida respuestas pendientes y eventos antiguos; no reaparecen datos de la sesión anterior', async () => {
+  const ui = await workspace('admin', { appointments: [oldAppointment] });
+  try {
+    const oldEvent = ui.getRealtime();
+    let finish;
+    ui.setAppointmentResponse(() => new Promise(resolve => { finish = resolve; }));
+    const oldLoad = ui.window.loadAppointments();
+    await settle();
+    await ui.click('#logoutButton');
+    finish({ data: [oldAppointment], count: 1, error: null });
+    assert.equal(await oldLoad, false);
+    assert.equal(ui.window.filteredAppointments().length, 0);
+    assert.equal(ui.query('#appView').hidden, true);
+    ui.setAppointmentResponse(() => ({ data: [], count: 0, error: null }));
+    await ui.window.startSession({ id: 'user' });
+    const calls = ui.appointmentCalls.length;
+    await oldEvent();
+    assert.equal(ui.appointmentCalls.length, calls);
+    assert.equal(ui.window.filteredAppointments().length, 0);
+  } finally { ui.dom.window.close(); }
+});
+
+test('una respuesta anterior a una edición o eliminación no restaura datos desactualizados', async () => {
+  for (const action of ['edit', 'delete']) {
+    const ui = await workspace('admin', { appointments: [oldAppointment], advisors: appointmentAdvisors });
+    try {
+      let finish;
+      ui.setAppointmentResponse(() => new Promise(resolve => { finish = resolve; }));
+      const oldLoad = ui.window.loadAppointments();
+      await settle();
+      ui.setAppointmentResponse(storeResponse(ui));
+      if (action === 'edit') {
+        ui.window.openAppointmentDialog(ui.window.mapAppointment(oldAppointment));
+        await ui.change('#subject', 'Entrega al arrendatario');
+        await ui.window.saveAppointment({ preventDefault() {} });
+      } else {
+        ui.window.confirm = () => true;
+        ui.window.openDetails(oldAppointment.id);
+        await ui.window.deleteAppointment();
+      }
+      await settle();
+      finish({ data: [oldAppointment], count: 1, error: null });
+      await oldLoad;
+      const rows = ui.window.filteredAppointments();
+      if (action === 'edit') assert.equal(rows[0].subject, 'Entrega al arrendatario');
+      else assert.equal(rows.length, 0);
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('una excepción al guardar libera el formulario y no anuncia éxito ni elimina citas previas', async () => {
+  const ui = await workspace('admin', { appointments: [oldAppointment], advisors: appointmentAdvisors,
+    saveThrow: new Error('Failed to fetch') });
+  try {
+    await fillNewAppointment(ui);
+    await ui.window.saveAppointment({ preventDefault() {} });
+    assert.equal(ui.query('#saveAppointment').disabled, false);
+    assert.equal(ui.query('#appointmentDialog').open, true);
+    assert.equal(ui.query('#client').value, 'Cliente nuevo de prueba');
+    assert.equal(ui.query('#toast').textContent, 'No fue posible conectar con el servidor.');
+    assert.deepEqual(Array.from(ui.window.filteredAppointments(), row => row.id), ['old-appointment']);
+  } finally { ui.dom.window.close(); }
+});
+
+test('un guardado que termina después de cerrar sesión no añade datos a la sesión cerrada', async () => {
+  let finish;
+  const ui = await workspace('admin', { advisors: appointmentAdvisors,
+    saveResponse: () => new Promise(resolve => { finish = resolve; }) });
+  try {
+    await fillNewAppointment(ui);
+    const saving = ui.window.saveAppointment({ preventDefault() {} });
+    await settle();
+    assert.equal(ui.query('#saveAppointment').disabled, true);
+    await ui.click('#logoutButton');
+    assert.equal(ui.query('#saveAppointment').disabled, false);
+    finish({ data: { ...oldAppointment, id: 'late-save' }, error: null });
+    await saving;
+    assert.equal(ui.window.filteredAppointments().length, 0);
+    assert.equal(ui.query('#appView').hidden, true);
+  } finally { ui.dom.window.close(); }
+});
+
+test('la paginación mantiene la lectura para todos los roles activos y no consulta con contraseña temporal', async () => {
+  for (const role of ['admin', 'supervisor', 'advisor']) {
+    const ui = await workspace(role, { appointments: agendaRows() });
+    try {
+      assert.equal(ui.window.filteredAppointments().length, 1018);
+      assert.equal(ui.appointmentCalls.length, 3);
+    } finally { ui.dom.window.close(); }
+  }
+  const temporary = await workspace('advisor', { profile: { must_change_password: true }, appointments: agendaRows() });
+  try {
+    assert.equal(await temporary.window.loadAppointments(), false);
+    assert.equal(temporary.appointmentCalls.length, 0);
+    assert.equal(temporary.window.filteredAppointments().length, 0);
+  } finally { temporary.dom.window.close(); }
+});
+
+test('una agenda vacía confirmada por Supabase sí sustituye la lista anterior', async () => {
+  const ui = await workspace('admin', { appointments: [oldAppointment] });
+  try {
+    ui.setAppointmentResponse(() => ({ data: [], count: 0, error: null }));
+    assert.equal(await ui.window.loadAppointments(), true);
+    assert.equal(ui.window.filteredAppointments().length, 0);
+    assert.equal(ui.query('#toast').textContent.includes('No fue posible actualizar'), false);
+  } finally { ui.dom.window.close(); }
+});
+
+test('una respuesta de guardado sin registro confirmado no muestra éxito ni borra datos o formulario', async () => {
+  const ui = await workspace('admin', { appointments: [oldAppointment], advisors: appointmentAdvisors,
+    saveResponse: async () => ({ data: null, error: null }) });
+  try {
+    await fillNewAppointment(ui);
+    await ui.window.saveAppointment({ preventDefault() {} });
+    assert.equal(ui.query('#saveAppointment').disabled, false);
+    assert.equal(ui.query('#appointmentDialog').open, true);
+    assert.equal(ui.window.filteredAppointments().length, 1);
+    assert.ok(ui.query('#toast').textContent.includes('evitar duplicados'));
   } finally { ui.dom.window.close(); }
 });
