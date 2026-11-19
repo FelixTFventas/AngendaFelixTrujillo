@@ -17,6 +17,8 @@ En **Supabase → SQL Editor**, ejecuta `supabase/add-simi-property-catalog.sql`
 
 Se crean el catálogo, el control de sincronización y la búsqueda autorizada. Se añaden dos campos opcionales a las citas para conservar el código y enlace elegidos; las citas actuales no se modifican.
 
+**Para la carga por lotes en un proyecto existente**, ejecuta después **`supabase/add-simi-batch-sync.sql`**. Si el catálogo ya estaba activado, ejecuta únicamente este segundo archivo. Añade una tabla privada de descarga temporal y un cursor durable sin cambiar el catálogo publicado ni las citas. `supabase/schema.sql` ya incluye ambos pasos para instalaciones nuevas.
+
 ## 2. Guardar la clave sin compartirla
 
 En **Supabase → Edge Functions → Secrets**, crea:
@@ -33,7 +35,9 @@ Opcionales:
 - `SIMI_PAGE_SIZE`: por defecto **20**, máximo 100. Las páginas son más pequeñas para reducir el tiempo de respuesta. Aumentar o reducir este valor cambia el número total de consultas.
 - `SIMI_MAX_PAGES`: por defecto 100, máximo 200.
 - `SIMI_REQUEST_TIMEOUT_MS`: por defecto **45000** (45 segundos), máximo 60000.
-- `SIMI_SYNC_TIMEOUT_MS`: por defecto **100000** (100 segundos para la descarga completa), máximo 120000. Evita dejar una descarga ilimitada; si no termina, no se aplica una copia parcial.
+- `SIMI_SYNC_TIMEOUT_MS`: por defecto **100000**, máximo 120000. Es un techo adicional por ejecución, no un límite para toda la descarga reanudable.
+- `SIMI_BATCH_PAGES`: por defecto **5**, entre 1 y 10 páginas por ejecución.
+- `SIMI_BATCH_TIMEOUT_MS`: por defecto **60000**, máximo 80000. Si no queda margen para otra página, el lote termina con el cursor guardado en lugar de perder todo el trabajo.
 
 Confirma las cuotas antes de cambiar estos límites. No hay reintentos automáticos tras errores de red, autenticación o cuota.
 
@@ -62,22 +66,52 @@ Si despliegas desde el editor del panel, incluye **ambos archivos** de `supabase
 7. Reabre la cita y verifica que conserva la descripción, el código y el enlace.
 8. Cambia el asunto a otro tipo: el buscador desaparece y la dirección permanece editable.
 
-**Aún hay que probar tu cuenta real**: la documentación tiene inconsistencias de paginación y algunos ejemplos de respuesta están incompletos. El adaptador reconoce `data`, `totalInmuebles` y `totalPagina`, y falla de forma segura si el formato o la paginación no coinciden. No se ha probado con tu clave durante el desarrollo.
+**Aún hay que probar tu cuenta real**: la documentación tiene inconsistencias de paginación y algunos ejemplos de respuesta están incompletos. El adaptador normaliza colecciones `data`, `Inmuebles` o `inmuebles`, arrays directos, objetos indexados de PHP y envoltorios de respuesta limitados. Conserva y valida los metadatos `totalInmuebles`, `totalPagina` y sus variantes explícitas. No se ha probado con tu clave durante el desarrollo.
 
 ### Si ya publicaste la primera versión de la función
 
-Actualiza **los dos archivos** `index.ts` y `simi.mjs` en la función existente y pulsa **Deploy updates**. Mantén desactivado **Verify JWT with legacy secret** solo en `simi-catalog-sync`. No hay que volver a ejecutar SQL ni cambiar tu clave para aplicar esta corrección.
+Para pasar de descarga única a lotes, sigue **este orden**:
 
-Publica después la nueva versión de la agenda para ver **Probar conexión**. La prueba utiliza GET autenticado: si todavía está desplegada la función antigua, esta lo rechaza sin iniciar una sincronización.
+1. Ejecuta **`supabase/add-simi-batch-sync.sql`** una vez en SQL Editor.
+2. Actualiza completos **`index.ts` y `simi.mjs`** en la función existente y pulsa **Deploy updates**. Mantén desactivado **Verify JWT with legacy secret** solo en `simi-catalog-sync`.
+3. Publica también la agenda actualizada (`index.html` y `property-picker.js`, junto con el resto del proyecto). Recarga la aplicación.
+4. Entra como administrador, selecciona **Visita comercial** y pulsa **Actualizar catálogo**.
+
+Los clientes anteriores reciben `SIMI_CLIENT_UPDATE` y no empiezan otra descarga completa. Las funciones SQL antiguas de publicación completa quedan deshabilitadas para evitar que se mezclen dos métodos. No ejecutes otra vez el script base del catálogo después del script de lotes.
+
+### Pausar, continuar y reiniciar
+
+- La interfaz muestra cuántos inmuebles y páginas están confirmados en Supabase.
+- Encadena hasta 20 lotes con avance por clic; no son consultas de espera ni reintentos de un error. Si alcanza ese límite, muestra **Continuar carga**.
+- **Pausar después del lote** termina la cadena de esta pestaña. El lote actual confirma sus páginas y después se detiene.
+- Cerrar el diálogo, cambiar a un asunto no comercial o cerrar sesión impide iniciar más lotes desde esa pestaña. La página en curso puede terminar y quedar guardada en el servidor.
+- Al volver a pulsar **Actualizar catálogo / Continuar carga**, el servidor retoma desde la siguiente página guardada, incluso desde otro dispositivo. El navegador nunca decide el cursor.
+- Tras un fallo de red o tiempo de espera, se conservan las páginas confirmadas y se espera al menos un minuto antes de reintentar.
+- Si SIMI cambia los totales, repite códigos o entrega datos inválidos, se exige **Reiniciar carga parcial** con confirmación. Solo se descartan los registros temporales de ese trabajo; no se vacía el catálogo visible ni se cambian citas.
+- Un trabajo con más de 24 horas o con cambio de agencia exige reinicio para no mezclar inventarios de momentos o cuentas diferentes.
+- La publicación final y la retirada de códigos ausentes se hacen en una sola transacción al confirmar la última página. Si falla, sigue disponible el catálogo anterior.
+- **La descarga antigua que falló en la página 22 no guardaba páginas**: no es posible recuperarlas retroactivamente. La primera carga con esta versión empieza en la página 1; las siguientes interrupciones sí se reanudan.
+- Si hay un programador o un segundo administrador trabajando, pausar una pestaña no los detiene. El bloqueo evita trabajos simultáneos y todos continúan el mismo cursor.
+
+### Formatos de respuesta admitidos
+
+- Se aceptan arrays y objetos PHP solo cuando contienen registros con códigos de inmueble reconocibles; no se importan arrays arbitrarios de contactos.
+- Un acuse como `{code:0,response:true}`, un objeto vacío o la respuesta de detalle de un solo inmueble no se confunden con un catálogo.
+- Los indicadores explícitos de error se rechazan aunque incluyan datos. Los errores sin estado numérico de autenticación identificado se muestran como `SIMI_REJECTED`, sin afirmar que la clave sea válida o inválida.
+- Los contadores inválidos, contradictorios o que correspondan a otra página bloquean la actualización. Las descargas parciales no reemplazan el catálogo.
+- Los errores de formato incluyen un resumen **solo de tipos**, por ejemplo `raíz=object, data=object`. Se muestran nombres de campos de una lista fija, nunca nombres desconocidos, valores, claves, códigos de inmuebles o contactos.
+- No se cambian automáticamente la versión del endpoint ni el método de autenticación, y no se hacen consultas extra para adivinar formatos.
+
+Tras desplegar, pulsa **Probar conexión** una vez. Si persiste el error, comparte el mensaje o el campo `response_shape` del evento `simi_request_failed`, no la respuesta original de SIMI. El resumen permite confirmar qué parte del contrato necesita revisión; no demuestra por sí solo que el acceso autenticado haya sido aceptado.
 
 ### Diagnóstico seguro de conexión
 
-El mensaje de la agenda incluye un código y, cuando corresponde, la página que falló. En **Edge Functions → simi-catalog-sync → Logs**, los eventos `simi_request_failed` contienen únicamente código, acción, página, estado HTTP y tiempos. No incluyen la clave, encabezados, tokens, respuesta de SIMI ni contactos.
+El mensaje de la agenda incluye un código y, cuando corresponde, la página que falló. En **Edge Functions → simi-catalog-sync → Logs**, los eventos `simi_request_failed` contienen código, acción, página, estado HTTP, tiempos y un resumen de tipos de respuesta cuando hay un error de formato. No incluyen la clave, encabezados, tokens, respuesta original de SIMI ni contactos.
 
 | Código | Qué significa / qué revisar |
 |---|---|
 | `SIMI_TIMEOUT` | Una consulta no terminó a tiempo. La espera pasó de 15 a 45 segundos por defecto; revisa el tamaño de página y la latencia con soporte. |
-| `SIMI_SYNC_TIMEOUT` | La descarga completa agotó su presupuesto de tiempo. No se guardó una copia parcial. |
+| `SIMI_SYNC_TIMEOUT` | El lote agotó su tiempo. Las páginas ya confirmadas quedan guardadas; puedes continuar desde la siguiente sin reemplazar el catálogo anterior. |
 | `SIMI_TLS` | Falló la validación del certificado TLS. Solicita a SIMI revisar la cadena de certificados; nunca desactives TLS ni uses HTTP con la clave. |
 | `SIMI_DNS` | Supabase no pudo resolver el dominio. Consulta si SIMI permite el acceso desde servicios externos. |
 | `SIMI_NETWORK` | Falló el transporte. Confirma restricciones por IP/centro de datos con SIMI y revisa sus registros en la hora indicada. |
@@ -85,8 +119,13 @@ El mensaje de la agenda incluye un código y, cuando corresponde, la página que
 | `SIMI_AUTH` | SIMI rechazó clave o permisos, incluso si su respuesta HTTP era 200. Confirma el formato original y los permisos con soporte sin compartir la clave. |
 | `SIMI_RATE_LIMIT` | Se alcanzó la cuota; no repitas consultas y confirma los límites. |
 | `SIMI_FORMAT` | El servidor no entregó el formato de listado esperado. Se necesita confirmar el contrato de la API. |
+| `SIMI_REJECTED` | SIMI indicó un error en el JSON. La respuesta no se interpreta como listado ni como catálogo vacío. |
 | `SIMI_HTTP` | El proveedor devolvió otro estado HTTP de error; el diagnóstico indica su número, sin mostrar el cuerpo. |
 | `SIMI_UNEXPECTED` | Fallo no clasificado de la función; no se expone el error crudo. |
+| `SIMI_BATCH_MIGRATION` | Falta aplicar la migración de carga por lotes. |
+| `SIMI_CLIENT_UPDATE` | Hay que publicar o recargar la agenda con el protocolo por lotes. |
+| `SIMI_BATCH_BUSY` | Otra ejecución tiene el bloqueo, o aún no pasó el minuto de espera después de un fallo. |
+| `SIMI_JOB_FAILED` | La descarga parcial requiere reinicio explícito; el catálogo visible se conserva. |
 
 Que el servicio responda desde un computador **no demuestra** que admita conexiones autenticadas desde Supabase. El diagnóstico distingue esas situaciones; la causa real solo puede confirmarse al volver a probar la función con tu cuenta.
 
@@ -96,12 +135,12 @@ No se solicita el detalle de cada inmueble en una llamada adicional. Si el lista
 
 Por defecto la sincronización es **manual**. Antes de automatizarla, confirma con SIMI las cuotas y si se comparten con la web.
 
-Para programarla cada seis horas:
+Para iniciar una actualización cada seis horas y continuar los lotes pendientes:
 
 1. Activa las extensiones **pg_cron** y **pg_net** en tu proyecto.
 2. Genera una contraseña aleatoria de al menos 32 caracteres y guárdala en Edge Function Secrets con nombre `SIMI_SYNC_SECRET`. Es distinta de la clave de SIMI.
 3. En **Supabase Vault**, crea `agenda_simi_sync_token` con ese mismo valor y `agenda_simi_sync_url` con la URL HTTPS de la función desplegada.
-4. Ejecuta `supabase/schedule-simi-catalog-sync.sql`. El archivo no contiene secretos.
+4. Ejecuta `supabase/schedule-simi-catalog-sync.sql` **después de la migración y del despliegue por lotes**. El archivo no contiene secretos. Si tenías el programador anterior, vuelve a ejecutar este archivo para reemplazarlo.
 5. Comprueba el resultado de la primera tarea y los registros de la función, sin registrar encabezados ni respuestas completas.
 
 Para detener la tarea:
@@ -110,7 +149,9 @@ Para detener la tarea:
 select cron.unschedule(jobid) from cron.job where jobname = 'agenda-simi-catalog';
 ```
 
-Las actualizaciones completas se espacian al menos 15 minutos; los reintentos tras un fallo, al menos un minuto. Un bloqueo evita descargar simultáneamente el catálogo desde distintas sesiones.
+La tarea comprueba el estado en la base de datos cada minuto, pero solo invoca la función si hay trabajo pendiente o han pasado seis horas desde la última publicación. No consulta SIMI durante las comprobaciones inactivas. Cada invocación procesa un lote; un trabajo fallido no se reinicia automáticamente.
+
+Las actualizaciones manuales completas se espacian al menos 15 minutos; los reintentos tras un fallo, al menos un minuto. Los lotes consecutivos con avance no tienen esa espera adicional. Un bloqueo evita descargar simultáneamente el catálogo desde distintas sesiones. No se publican la tabla temporal ni los tokens de reserva al navegador.
 
 ## Errores y conservación del historial
 

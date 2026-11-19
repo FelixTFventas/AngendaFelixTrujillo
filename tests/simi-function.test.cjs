@@ -13,6 +13,10 @@ function setup(options = {}) {
   let handler;
   const calls = [];
   const logs = [];
+  let currentProgress = {
+    status: options.complete ? 'complete' : 'pending', next_page: 1, received: 0, total: 1, total_pages: 1,
+    job_id: 'job-id', batch_token: 'lock-token', page_size: 20, max_pages: 100, agency: '459',
+  };
   const env = {
     SUPABASE_URL: 'https://test.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'LOCAL-TEST',
     SIMI_API_KEY: 'TEST-ONLY', ...options.env,
@@ -30,17 +34,27 @@ function setup(options = {}) {
     },
     rpc: async (name, args) => {
       calls.push({ name, args });
-      if (name === 'begin_simi_catalog_sync') return { data: options.busy ? null : 'lock-token', error: null };
-      return { data: name === 'apply_simi_catalog' ? 1 : null, error: null };
+      if (name === 'acquire_simi_sync_batch') return {
+        data: { ...currentProgress, ...(options.busy ? { status: 'busy' } : {}) },
+        error: options.acquireError || (options.missingMigration ? {} : null),
+      };
+      if (name === 'save_simi_sync_page') {
+        currentProgress = { ...currentProgress, status: options.pending ? 'pending' : 'complete', next_page: 2, received: 1 };
+      }
+      if (name === 'release_simi_sync_batch' && options.savedBeforeFailure) {
+        currentProgress = { ...currentProgress, next_page: 22, received: 420 };
+      }
+      if (name === 'reset_simi_sync_job') currentProgress = { ...currentProgress, status: 'idle' };
+      return { data: currentProgress, error: null };
     },
   };
   vm.runInNewContext(script, {
     Deno: { env: { get: name => env[name] }, serve: callback => { handler = callback; } },
     createClient: () => admin,
-    downloadCatalog: async () => {
+    downloadBatch: async (settings, progress, persist) => {
       calls.push({ name: 'download' });
       if (options.failDownload) throw new Error('No fue posible conectar con SIMI por HTTPS. El catálogo anterior se conserva.');
-      return [{ code: '459-1' }];
+      return persist({ page: 1, properties: [{ code: '459-1' }], total: 1, pages: 1 });
     },
     probeConnection: async () => {
       calls.push({ name: 'probe' });
@@ -54,7 +68,7 @@ function setup(options = {}) {
   return {
     calls,
     logs,
-    request: (body = { appointment_subject: 'Visita comercial' }, headers = { Authorization: 'Bearer valid' }, method = 'POST') =>
+    request: (body = { appointment_subject: 'Visita comercial', sync_protocol: 'batch-v1' }, headers = { Authorization: 'Bearer valid' }, method = 'POST') =>
       handler(new Request('https://test.supabase.co/functions/v1/simi-catalog-sync', {
         method, headers: { 'Content-Type': 'application/json', ...headers },
         ...(method === 'POST' ? { body: JSON.stringify(body) } : {}),
@@ -81,7 +95,7 @@ test('solo administradores activos con contraseña cambiada pueden sincronizar',
   const response = await fixture.request();
   assert.equal(response.status, 200);
   assert.equal((await response.json()).count, 1);
-  assert.deepEqual(fixture.calls.map(call => call.name), ['begin_simi_catalog_sync', 'download', 'apply_simi_catalog']);
+  assert.deepEqual(fixture.calls.map(call => call.name), ['acquire_simi_sync_batch', 'download', 'save_simi_sync_page']);
 });
 
 test('otros asuntos y falta de clave no hacen llamadas a SIMI', async () => {
@@ -108,7 +122,7 @@ test('un bloqueo activo no permite descargar y un fallo conserva el catálogo li
   assert.equal(busy.calls.some(call => call.name === 'download'), false);
   const failing = setup({ failDownload: true });
   assert.equal((await failing.request()).status, 502);
-  assert.deepEqual(failing.calls.map(call => call.name), ['begin_simi_catalog_sync', 'download', 'cancel_simi_catalog_sync']);
+  assert.deepEqual(failing.calls.map(call => call.name), ['acquire_simi_sync_batch', 'download', 'release_simi_sync_batch']);
 });
 
 test('GET prueba la conexión sin adquirir bloqueos ni escribir el catálogo', async () => {
@@ -146,4 +160,66 @@ test('se devuelven y registran códigos seguros de error sin copiar información
   assert.equal(JSON.stringify(payload).includes('NO-REVELAR'), false);
   assert.equal(JSON.stringify(fixture.logs).includes('NO-REVELAR'), false);
   assert.equal(fixture.logs[0].event, 'simi_request_failed');
+});
+
+test('responde con avance pendiente y nunca expone tokens internos al navegador', async () => {
+  const fixture = setup({ pending: true });
+  const response = await fixture.request();
+  const body = await response.json();
+  assert.equal(body.status, 'pending');
+  assert.equal(body.received, 1);
+  assert.equal(body.next_page, 2);
+  assert.equal('batch_token' in body, false);
+  assert.equal('job_id' in body, false);
+  assert.equal(fixture.calls.at(-1).name, 'release_simi_sync_batch');
+});
+
+test('un fallo devuelve el último avance confirmado para poder continuar', async () => {
+  const fixture = setup({ failDownload: true, savedBeforeFailure: true });
+  const response = await fixture.request();
+  const body = await response.json();
+  assert.equal(body.progress.next_page, 22);
+  assert.equal(body.progress.received, 420);
+  assert.equal(JSON.stringify(body).includes('lock-token'), false);
+});
+
+test('clientes antiguos y ausencia de migración no descargan páginas', async () => {
+  const fixture = setup();
+  assert.equal((await fixture.request({ appointment_subject: 'Visita comercial' })).status, 409);
+  assert.equal(fixture.calls.length, 0);
+  const missing = setup({ missingMigration: true });
+  const response = await missing.request();
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, 'SIMI_BATCH_MIGRATION');
+  assert.equal(missing.calls.some(call => call.name === 'download'), false);
+});
+
+test('configuración inválida y fallos de base de datos no se confunden con migración ausente', async () => {
+  for (const [acquireError, expected] of [
+    [{ message: 'SIMI_CONFIG', code: '22023' }, 'SIMI_CONFIG'],
+    [{ message: 'PRIVATE-DATABASE-DETAIL', code: 'XX000' }, 'SIMI_SAVE'],
+  ]) {
+    const fixture = setup({ acquireError });
+    const response = await fixture.request();
+    const body = await response.json();
+    assert.equal(body.code, expected);
+    assert.equal(JSON.stringify(body).includes('PRIVATE-DATABASE-DETAIL'), false);
+    assert.equal(fixture.calls.some(call => call.name === 'download'), false);
+  }
+});
+
+test('el programador usa seis horas entre catálogos nuevos y no puede reiniciar trabajos', async () => {
+  const secret = 'SECRETO-DE-PRUEBA-SOLO-LOCAL-1234567890';
+  const fixture = setup({ env: { SIMI_SYNC_SECRET: secret } });
+  assert.equal((await fixture.request(undefined, { 'x-simi-sync-secret': secret })).status, 200);
+  assert.equal(fixture.calls[0].args.refresh_seconds, 21600);
+  const manual = setup();
+  await manual.request();
+  assert.equal(manual.calls[0].args.refresh_seconds, 900);
+  const restart = setup({ env: { SIMI_SYNC_SECRET: secret } });
+  const response = await restart.request({
+    appointment_subject: 'Visita comercial', sync_protocol: 'batch-v1', action: 'restart',
+  }, { 'x-simi-sync-secret': secret });
+  assert.equal(response.status, 403);
+  assert.equal(restart.calls.length, 0);
 });

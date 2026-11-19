@@ -114,5 +114,7 @@ La paleta disponible es Ámbar, Turquesa, Azul, Violeta, Coral, Esmeralda, Índi
 
 Para activar el catálogo de solo lectura, sigue **[SIMI-SETUP.md](SIMI-SETUP.md)**. Requiere `supabase/add-simi-property-catalog.sql`, la función `simi-catalog-sync` y la clave guardada como secreto en Supabase. No modifica la web ni SIMI. El buscador solo aparece para **Visita comercial**; los demás asuntos conservan la dirección manual. La actualización periódica es opcional y se configura después de confirmar las cuotas.
 
+Para activar la sincronización reanudable, ejecuta además **`supabase/add-simi-batch-sync.sql`** antes de desplegar la función y la agenda actualizadas. Si el catálogo ya existe, ejecuta únicamente esta nueva migración. Conserva las citas y el catálogo anterior, guarda cada página en una tabla privada y publica solo al completar la descarga. Las instalaciones nuevas ya incluyen la configuración en `supabase/schema.sql`.
+
 ## Pruebas locales
 Con Node.js instalado, ejecuta `npm ci` y después `npm test`. Las pruebas comprueban periodos, filtros, acceso por rol, actualización de la interfaz y la función SQL en un PostgreSQL local en memoria. No se conectan al proyecto de Supabase ni modifican datos reales. Las dependencias de pruebas no son necesarias para publicar la aplicación estática.

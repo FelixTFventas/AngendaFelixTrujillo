@@ -216,3 +216,212 @@ test('el diagnóstico permite solo campos numéricos seguros y los límites inv�
     assert.equal(called, false);
   }
 });
+
+test('normaliza colecciones directas, envueltas y objetos indexados de PHP sin cambiar los registros', () => {
+  const rows = [row('459-1'), row('459-2')];
+  const formats = [
+    { data: rows, totalInmuebles: 2, totalPagina: 1 },
+    { Inmuebles: rows, totalInmuebles: 2, totalPagina: 1 },
+    { inmuebles: rows, totalInmuebles: 2, totalPagina: 1 },
+    { data: { data: rows, totalInmuebles: 2, totalPagina: 1 } },
+    { data: { Inmuebles: rows }, totalInmuebles: 2, totalPagina: 1 },
+    { response: { data: rows, totalInmuebles: 2, totalPagina: 1 } },
+    [{ data: rows, totalInmuebles: 2, totalPagina: 1 }],
+    { data: { 1: rows[0], 3: rows[1] }, totalInmuebles: 2, totalPagina: 1 },
+    { 1: rows[0], 3: rows[1], totalInmuebles: 2, totalPagina: 1 },
+    { data: { '459-1': rows[0], '459-2': rows[1] }, totalInmuebles: 2, totalPagina: 1 },
+    { data: [...rows, { totalInmuebles: 2, totalPagina: 1 }] },
+    { data: rows, pagination: { total_inmuebles: 2, total_pages: 1, current_page: 1 } },
+  ];
+  for (const payload of formats) {
+    const parsed = adapter.parsePage(payload, 1);
+    assert.deepEqual(parsed.rows, rows);
+    assert.equal(parsed.total, 2);
+    assert.equal(parsed.pageCount, 1);
+  }
+  assert.deepEqual(adapter.parsePage(rows).rows, rows);
+});
+
+test('acepta JSON doblemente codificado con profundidad limitada', () => {
+  const payload = { data: [row()], totalInmuebles: 1, totalPagina: 1 };
+  assert.deepEqual(adapter.parsePage(JSON.stringify(payload)).rows, payload.data);
+  assert.deepEqual(adapter.parsePage({ data: JSON.stringify(payload) }).rows, payload.data);
+  assert.throws(() => adapter.parsePage({ data: JSON.stringify({ data: JSON.stringify({ data: JSON.stringify(payload) }) }) }),
+    error => error.code === 'SIMI_FORMAT');
+});
+
+test('un acuse de éxito sin inmuebles, un detalle individual o un objeto vacío no son catálogos', () => {
+  for (const payload of [
+    { code: 0, response: true }, {}, { data: {} }, row(),
+    [{ code: 0, response: true }], { data: [{ nombre: 'PRIVADO' }] },
+    { data: [row(), { propietario: 'PRIVADO' }] },
+    { data: [row()], inmuebles: [row('459-2')] },
+  ]) {
+    assert.throws(() => adapter.parsePage(payload), error => error.code === 'SIMI_FORMAT');
+  }
+});
+
+test('rechaza errores de cualquier envoltorio aunque contengan una colección aparentemente válida', () => {
+  for (const payload of [
+    { response: false, data: [row()] },
+    { response: 'false', data: [row()] },
+    { response: ' False ', data: [row()] },
+    { success: false, data: [row()] },
+    { status: 'error', data: [row()] },
+    { status: 'false', data: [row()] },
+    { error: 'TOKEN-SECRETO', data: [row()] },
+    { data: { response: false, data: [row()] } },
+    { response: { data: [row()], success: false } },
+    { data: [row(), { response: false, totalInmuebles: 1 }] },
+  ]) {
+    assert.throws(() => adapter.parsePage(payload), error => error.code === 'SIMI_REJECTED'
+      && !error.message.includes('TOKEN-SECRETO'));
+  }
+  for (const payload of [
+    { data: { status: 401, data: [row()] } },
+    [{ code: 403 }],
+    { response: { code: 401, data: [row()] } },
+    { status: 'Unauthorized', data: [row()] },
+  ]) {
+    assert.throws(() => adapter.parsePage(payload), error => error.code === 'SIMI_AUTH');
+  }
+});
+
+test('el formato y la paginación del listado completo se preservan al importar objetos PHP', async () => {
+  let calls = 0;
+  const properties = await adapter.downloadCatalog({
+    apiKey: 'TEST', pageSize: 1,
+    fetcher: async () => {
+      calls += 1;
+      return json({ data: {
+        [String(calls * 2)]: row(`459-${calls}`),
+        totalInmuebles: '2', totalPagina: '2', pagina_actual: String(calls),
+      } });
+    },
+  });
+  assert.equal(properties.length, 2);
+  assert.equal(calls, 2);
+});
+
+test('metadatos contradictorios, fraccionarios, negativos o páginas repetidas bloquean la importación', () => {
+  for (const payload of [
+    { data: { data: [row()], totalInmuebles: 9 }, totalInmuebles: 1 },
+    { data: [row()], totalInmuebles: '1.000' },
+    { data: [row()], totalInmuebles: '1.5' },
+    { data: [row()], totalInmuebles: -1 },
+    { data: [row()], totalPagina: 0 },
+    { data: [row()], totalInmuebles: 0 },
+    { data: [row()], pagina_actual: 2 },
+    { data: [row()], totalPagina: true },
+  ]) {
+    assert.throws(() => adapter.parsePage(payload, 1), error => error.code === 'SIMI_FORMAT');
+  }
+});
+
+test('el diagnóstico describe solo nombres autorizados y tipos, nunca valores o claves de campos desconocidos', () => {
+  const payload = {
+    status: 'TOKEN-SECRETO',
+    data: { TOKEN_PRIVADO: { correo: 'persona@example.test' } },
+    apiKey: 'TOKEN-SECRETO', 'LLAVE-SECRETA': 'privado', description: 'TOKEN-SECRETO',
+  };
+  let failure;
+  try { adapter.parsePage(payload); } catch (error) { failure = error; }
+  assert.equal(failure.code, 'SIMI_FORMAT');
+  assert.ok(failure.message.includes('data=object'));
+  const diagnostic = adapter.safeDiagnostic(failure);
+  assert.deepEqual(diagnostic.response_shape, { root: 'object', data: 'object', status: 'string', description: 'string' });
+  const output = JSON.stringify({ message: failure.message, diagnostic });
+  for (const value of ['TOKEN-SECRETO', 'TOKEN_PRIVADO', 'LLAVE-SECRETA', 'persona@example.test']) {
+    assert.equal(output.includes(value), false);
+  }
+  const malicious = new adapter.SimiError('SIMI_FORMAT', 'Seguro', {
+    response_shape: { root: 'object', data: 'TOKEN-SECRETO', apiKey: 'string' },
+  });
+  assert.deepEqual(adapter.safeDiagnostic(malicious).response_shape, { root: 'object' });
+});
+
+test('la prueba pequeña valida que la respuesta contenga inmuebles de la agencia correcta', async () => {
+  await assert.rejects(adapter.probeConnection({
+    apiKey: 'TEST', fetcher: async () => json({ Inmuebles: [row('123-1')] }),
+  }), error => error.code === 'SIMI_PROPERTY_CODE');
+  const response = await adapter.probeConnection({
+    apiKey: 'TEST', fetcher: async () => json({ Inmuebles: { 3: row('459-3') }, response: true }),
+  });
+  assert.equal(response.code, 'SIMI_OK');
+  assert.equal(response.sample_count, 1);
+});
+
+test('los lotes reanudan el cursor y confirman cada página antes de consultar la siguiente', async () => {
+  const requests = [];
+  const confirmed = [];
+  let state = { status: 'pending', next_page: 22, received: 420, total: 500, total_pages: 25 };
+  const settings = {
+    apiKey: 'TEST', batchPages: 2,
+    fetcher: async url => {
+      const page = Number(url.match(/\/limite\/(\d+)/)[1]);
+      requests.push(page);
+      if (page > 22) assert.ok(confirmed.includes(page - 1));
+      return json({
+        data: Array.from({ length: 20 }, (_, n) => row(`459-${(page - 1) * 20 + n + 1}`)),
+        totalInmuebles: 500, totalPagina: 25, pagina_actual: page,
+      });
+    },
+  };
+  const persist = async page => {
+    confirmed.push(page.page);
+    state = { ...state, next_page: page.page + 1, received: state.received + page.properties.length,
+      status: page.page === 25 ? 'complete' : 'pending' };
+    return state;
+  };
+  state = await adapter.downloadBatch(settings, state, persist);
+  assert.equal(state.next_page, 24);
+  assert.equal(state.received, 460);
+  state = await adapter.downloadBatch(settings, state, persist);
+  assert.equal(state.status, 'complete');
+  assert.deepEqual(requests, [22, 23, 24, 25]);
+});
+
+test('un error de página no deshace confirmaciones anteriores y no se reintenta automáticamente', async () => {
+  const confirmed = [];
+  let calls = 0;
+  await assert.rejects(adapter.downloadBatch({
+    apiKey: 'TEST', fetcher: async () => {
+      if (++calls === 2) throw new Error('network');
+      return json({ data: [row()], totalInmuebles: 2, totalPagina: 2 });
+    },
+  }, { status: 'pending', next_page: 1, received: 0 }, async page => {
+    confirmed.push(page.page);
+    return { status: 'pending', next_page: 2, received: 1, total: 2, total_pages: 2 };
+  }), error => error.code === 'SIMI_NETWORK');
+  assert.deepEqual(confirmed, [1]);
+  assert.equal(calls, 2);
+});
+
+test('termina el lote antes de agotar el tiempo sin perder el avance confirmado', async () => {
+  let clock = 0;
+  let calls = 0;
+  const progress = await adapter.downloadBatch({
+    apiKey: 'TEST', batchTimeoutMs: 60000, clock: () => clock,
+    fetcher: async () => {
+      calls += 1; clock = 20000;
+      return json({ data: [row()], totalInmuebles: 3, totalPagina: 3 });
+    },
+  }, { status: 'pending', next_page: 1, received: 0 }, async () => ({
+    status: 'pending', next_page: 2, received: 1, total: 3, total_pages: 3,
+  }));
+  assert.equal(calls, 1);
+  assert.equal(progress.next_page, 2);
+});
+
+test('cambios de totales y confirmaciones sin cursor nuevo detienen el lote', async () => {
+  await assert.rejects(adapter.downloadBatch({
+    apiKey: 'TEST', fetcher: async () => json({ data: [row()], totalInmuebles: 3, totalPagina: 3 }),
+  }, { status: 'pending', next_page: 2, received: 1, total: 2, total_pages: 2 }, async () => {
+    assert.fail('no debe confirmarse una página de otro catálogo');
+  }), error => error.code === 'SIMI_CHANGED');
+  await assert.rejects(adapter.downloadBatch({
+    apiKey: 'TEST', fetcher: async () => json({ data: [row()], totalInmuebles: 2, totalPagina: 2 }),
+  }, { status: 'pending', next_page: 1, received: 0 }, async () => ({
+    status: 'pending', next_page: 1, received: 0,
+  })), error => error.code === 'SIMI_SAVE');
+});

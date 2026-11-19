@@ -10,6 +10,10 @@
       this.status = document.querySelector('#simiPropertyStatus');
       this.syncButton = document.querySelector('#simiSyncButton');
       this.probeButton = document.querySelector('#simiProbeButton');
+      this.pauseButton = document.querySelector('#simiPauseButton');
+      this.restartButton = document.querySelector('#simiRestartButton');
+      this.batchProgress = null;
+      this.pauseRequested = false;
       this.input = form.elements.property;
       this.sequence = 0;
       this.syncing = false;
@@ -53,6 +57,18 @@
       });
       this.syncButton.addEventListener('click', () => this.sync());
       this.probeButton.addEventListener('click', () => this.probe());
+      this.pauseButton.addEventListener('click', () => {
+        this.pauseRequested = true;
+        this.pauseButton.disabled = true;
+        this.status.textContent = 'Pausando al terminar el lote en curso. Las páginas confirmadas quedarán guardadas.';
+      });
+      this.restartButton.addEventListener('click', () => {
+        if (!this.enabled() || this.getContext().profile?.role !== 'admin' || this.syncing
+          || this.batchProgress?.status !== 'failed') return;
+        if (root.confirm('¿Reiniciar solo la descarga parcial? El catálogo publicado y las citas no se modificarán.')) {
+          this.runAction('restart');
+        }
+      });
       form.closest('dialog').addEventListener('close', () => this.cancelSearch());
     }
 
@@ -80,8 +96,10 @@
       this.query.value = '';
       this.results.replaceChildren();
       this.status.textContent = '';
+      this.batchProgress = null;
       this.container.hidden = true;
       this.renderSelection();
+      this.renderBatchProgress();
     }
 
     open(appointment) {
@@ -105,6 +123,7 @@
       this.candidates.clear();
       this.status.textContent = 'Busca por código, barrio o conjunto. Se consulta el catálogo guardado, no SIMI en cada búsqueda.';
       this.renderSelection();
+      this.renderBatchProgress();
     }
 
     renderSelection() {
@@ -194,51 +213,118 @@
 
     probe() { return this.runAction('probe'); }
 
+    setBatchProgress(value) {
+      if (!value || !['idle', 'pending', 'complete', 'failed', 'busy', 'waiting'].includes(value.status)
+        || !Number.isInteger(value.next_page) || value.next_page < 1 || value.next_page > 201
+        || !Number.isInteger(value.received) || value.received < 0 || value.received > 10000) return false;
+      this.batchProgress = {
+        status: value.restart_required ? 'failed' : value.status, next_page: value.next_page, received: value.received,
+        total: Number.isInteger(value.total) && value.total > 0 ? value.total : null,
+        total_pages: Number.isInteger(value.total_pages) && value.total_pages > 0 ? value.total_pages : null,
+      };
+      this.renderBatchProgress();
+      return true;
+    }
+
+    progressLabel() {
+      if (!this.batchProgress) return 'Preparando carga por lotes…';
+      const { received, next_page, total, total_pages } = this.batchProgress;
+      const count = new Intl.NumberFormat('es-CO').format(received);
+      return `${count}${total ? ` de ${new Intl.NumberFormat('es-CO').format(total)}` : ''} inmuebles guardados · ${next_page - 1}${total_pages ? ` de ${total_pages}` : ''} páginas`;
+    }
+
+    renderBatchProgress() {
+      const working = this.syncing && this.activeAction !== 'probe';
+      const allowed = this.enabled() && this.getContext().profile?.role === 'admin';
+      document.querySelector('#simiBatchProgress').hidden = !allowed || (!this.batchProgress && !working);
+      document.querySelector('#simiBatchLabel').textContent = this.progressLabel();
+      const bar = document.querySelector('#simiBatchBar');
+      const { received = 0, next_page = 1, total, total_pages } = this.batchProgress || {};
+      if (this.batchProgress?.status === 'complete') {
+        bar.max = 1;
+        bar.value = 1;
+      } else if (total || total_pages) {
+        bar.max = total || total_pages;
+        bar.value = total ? received : next_page - 1;
+      } else bar.removeAttribute('value');
+      this.pauseButton.hidden = !allowed || !working;
+      this.pauseButton.disabled = this.pauseRequested;
+      this.restartButton.hidden = !allowed || this.batchProgress?.status !== 'failed';
+      this.restartButton.disabled = this.syncing;
+      this.syncButton.textContent = ['pending', 'busy', 'waiting'].includes(this.batchProgress?.status)
+        ? 'Continuar carga' : 'Actualizar catálogo';
+    }
+
     async runAction(action) {
       if (!this.enabled() || this.getContext().profile?.role !== 'admin' || this.syncing) return;
       this.cancelSearch();
       const sequence = this.sequence;
       this.syncing = true;
+      this.activeAction = action;
+      this.pauseRequested = false;
       this.syncButton.disabled = true;
       this.probeButton.disabled = true;
+      this.renderBatchProgress();
       this.status.textContent = action === 'probe'
         ? 'Probando una consulta pequeña de lectura a SIMI, sin actualizar el catálogo…'
-        : 'Actualizando el catálogo mediante consultas de lectura a SIMI…';
+        : 'Cargando un lote de SIMI. El avance se guardará página por página…';
       try {
-        // GET evita que una función antigua interprete la prueba como sincronización.
-        const options = action === 'probe'
-          ? { method: 'GET', headers: { 'x-simi-appointment-subject': 'Visita comercial' } }
-          : { body: { appointment_subject: 'Visita comercial' } };
-        const { data, error } = await this.client.functions.invoke('simi-catalog-sync', options);
-        if (error) {
-          let message = 'No fue posible actualizar el catálogo. Revisa la función y los secretos en Supabase.';
-          try {
-            const payload = await error.context.json();
-            message = typeof payload.error === 'string' ? payload.error : message;
-            if (/^SIMI_[A-Z_]+$/.test(payload.code || '')) {
-              const page = Number.isInteger(payload.diagnostic?.page) ? `, página ${payload.diagnostic.page}` : '';
-              message = `${payload.code}${page}: ${message}`;
-            }
-          } catch {}
-          throw new Error(message);
+        let previousPage = action !== 'restart' && ['pending', 'busy', 'waiting'].includes(this.batchProgress?.status)
+          ? this.batchProgress.next_page : 1;
+        for (let batch = 0; batch < 20; batch += 1) {
+          if (sequence !== this.sequence || !this.enabled()) return;
+          const options = action === 'probe'
+            ? { method: 'GET', headers: { 'x-simi-appointment-subject': 'Visita comercial' } }
+            : { body: { appointment_subject: 'Visita comercial', sync_protocol: 'batch-v1', ...(action === 'restart' ? { action } : {}) } };
+          const { data, error } = await this.client.functions.invoke('simi-catalog-sync', options);
+          if (sequence !== this.sequence || !this.enabled()) return;
+          if (error) {
+            let message = 'No fue posible actualizar el catálogo. Revisa la función y los secretos en Supabase.';
+            try {
+              const payload = await error.context.json();
+              this.setBatchProgress(payload.progress);
+              message = typeof payload.error === 'string' ? payload.error : message;
+              if (/^SIMI_[A-Z_]+$/.test(payload.code || '')) {
+                const page = Number.isInteger(payload.diagnostic?.page) ? `, página ${payload.diagnostic.page}` : '';
+                message = `${payload.code}${page}: ${message}`;
+              }
+            } catch {}
+            throw new Error(message);
+          }
+          if (action === 'probe') {
+            this.status.textContent = data?.code === 'SIMI_OK'
+              ? 'Conexión con SIMI comprobada. Ahora puedes pulsar Actualizar catálogo. La prueba no cambió ningún inmueble.'
+              : 'La función necesita actualizarse para admitir esta prueba. El catálogo no se ha modificado.';
+            return;
+          }
+          const hasProgress = this.setBatchProgress(data);
+          if (data?.status === 'complete' || (!data?.status && Number.isInteger(data?.count))) {
+            this.status.textContent = `Catálogo completo publicado: ${Number(data.count ?? data.received) || 0} inmuebles. SIMI no ha sido modificado.`;
+            if (this.query.value.trim().length >= 2) await this.search();
+            return;
+          }
+          if (!hasProgress || data.status !== 'pending' || data.next_page <= previousPage) {
+            throw new Error('La función no confirmó un avance nuevo. La carga se detuvo para evitar repetir consultas.');
+          }
+          previousPage = data.next_page;
+          this.status.textContent = `${this.progressLabel()}. Continuando desde la página ${data.next_page}…`;
+          if (this.pauseRequested || batch === 19) {
+            this.status.textContent = `${this.progressLabel()}. Carga pausada; pulsa Continuar carga para reanudar.`;
+            return;
+          }
+          action = 'sync';
         }
-        if (sequence !== this.sequence || !this.enabled()) return;
-        if (action === 'probe') {
-          this.status.textContent = data?.code === 'SIMI_OK'
-            ? 'Conexión con SIMI comprobada. Ahora puedes pulsar Actualizar catálogo. La prueba no cambió ningún inmueble.'
-            : 'La función necesita actualizarse para admitir esta prueba. El catálogo no se ha modificado.';
-          return;
-        }
-        this.status.textContent = `Catálogo actualizado: ${Number(data?.count) || 0} inmuebles. SIMI no ha sido modificado.`;
-        if (this.query.value.trim().length >= 2) await this.search();
       } catch (error) {
         if (sequence === this.sequence && this.enabled()) {
           this.status.textContent = `${error.message || 'No fue posible actualizar el catálogo.'} Puedes utilizar la dirección manual.`;
+          if (this.batchProgress?.status === 'pending') this.status.textContent += ` El avance se conserva desde la página ${this.batchProgress.next_page}.`;
         }
       } finally {
         this.syncing = false;
+        this.activeAction = null;
         this.syncButton.disabled = false;
         this.probeButton.disabled = false;
+        this.renderBatchProgress();
       }
     }
   }
