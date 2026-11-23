@@ -3,7 +3,8 @@ const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const teams = { rental: 'Arrendamientos', sales: 'Ventas' };
 const roleLabels = { admin: 'Administrador', supervisor: 'Supervisora', advisor: 'Asesor' };
-const statusLabel = { pending: 'Pendiente', confirmed: 'Confirmada', completed: 'Realizada', cancelled: 'Cancelada' };
+const statusLabel = { pending: 'Pendiente', confirmed: 'Confirmada', completed: 'Realizada', rented: 'Arrendado', cancelled: 'Cancelado' };
+const appointmentOutcomeValues = ['completed', 'rented', 'cancelled'];
 
 let appointments = [];
 let appointmentsRequest = 0;
@@ -24,6 +25,8 @@ let activeAppointmentId = null;
 let dashboardMode = 'week';
 let dashboardDate = startOfDay(new Date());
 let dashboardData = [];
+let dashboardSubjects = [];
+let dashboardSources = [];
 let dashboardRequest = 0;
 let dashboardLoaded = false;
 
@@ -418,6 +421,8 @@ function render() {
 function resetDashboard() {
   dashboardRequest += 1;
   dashboardData = [];
+  dashboardSubjects = [];
+  dashboardSources = [];
   dashboardLoaded = false;
   dashboardMode = 'week';
   dashboardDate = startOfDay(new Date());
@@ -428,6 +433,9 @@ function resetDashboard() {
   document.querySelector('#dashboardTeams').replaceChildren();
   document.querySelector('#dashboardRows').replaceChildren();
   document.querySelector('#dashboardTotals').replaceChildren();
+  document.querySelector('#dashboardSubjectsRows').replaceChildren();
+  document.querySelector('#dashboardSourcesRows').replaceChildren();
+  document.querySelector('#dashboardUnresolved').textContent = '';
   document.querySelector('#dashboardStatus').textContent = '';
   document.querySelector('#dashboardRetry').hidden = true;
   document.querySelector('#dashboardResults').setAttribute('aria-busy', 'false');
@@ -468,23 +476,35 @@ function updateDashboardAdvisorOptions() {
 
 function renderDashboard() {
   if (!window.AppointmentDashboard.canView(currentProfile)) return;
-  const { filterRows, totals } = window.AppointmentDashboard;
+  const { filterRows, totals, groupCategories } = window.AppointmentDashboard;
   const rows = filterRows(dashboardData, dashboardTeam.value, dashboardAdvisor.value);
   const number = value => new Intl.NumberFormat('es-CO').format(value);
+  const cells = counts => ['total', 'completed', 'rented', 'cancelled']
+    .map(key => `<td class="numeric" data-metric="${key}">${number(counts[key])}</td>`).join('');
   document.querySelector('#dashboardTeams').innerHTML = Object.entries(teams)
     .filter(([team]) => dashboardTeam.value === 'all' || dashboardTeam.value === team)
     .map(([team, label]) => {
       const counts = totals(filterRows(rows, team));
-      return `<article class="dashboard-team ${team}"><h2>${label}</h2><dl class="dashboard-counts"><div><dt>Total de citas</dt><dd>${dashboardLoaded ? number(counts.total) : '—'}</dd></div><div><dt>Citas realizadas</dt><dd class="completed">${dashboardLoaded ? number(counts.completed) : '—'}</dd></div></dl></article>`;
+      return `<article class="dashboard-team ${team}"><h2>${label}</h2><dl class="dashboard-counts">${[
+        ['total', 'Total de citas'], ['completed', 'Realizadas'], ['rented', 'Arrendadas'], ['cancelled', 'Canceladas'],
+      ].map(([key, title]) => `<div><dt>${title}</dt><dd class="${key}">${dashboardLoaded ? number(counts[key]) : '—'}</dd></div>`).join('')}</dl><p class="dashboard-team-note">${dashboardLoaded ? `${number(counts.unresolved)} citas sin resultado todavía.` : 'Esperando indicadores.'}</p></article>`;
     }).join('');
   const sorted = [...rows].sort((a, b) => a.team.localeCompare(b.team) || a.advisor_name.localeCompare(b.advisor_name, 'es'));
   document.querySelector('#dashboardRows').innerHTML = dashboardLoaded
-    ? sorted.length ? sorted.map(row => `<tr><th scope="row">${escapeHTML(row.advisor_name)}${row.active ? '' : ' <span class="dashboard-inactive">(inactivo)</span>'}</th><td>${escapeHTML(teams[row.team] || row.team)}</td><td class="numeric">${number(row.total)}</td><td class="numeric">${number(row.completed)}</td></tr>`).join('')
-      : '<tr><td colspan="4" class="empty">No hay asesores para este periodo y filtros.</td></tr>'
-    : '<tr><td colspan="4" class="empty">Sin datos disponibles.</td></tr>';
+    ? sorted.length ? sorted.map(row => `<tr><th scope="row">${escapeHTML(row.advisor_name)}${row.active ? '' : ' <span class="dashboard-inactive">(inactivo)</span>'}</th><td>${escapeHTML(teams[row.team] || row.team)}</td>${cells(row)}</tr>`).join('')
+      : '<tr><td colspan="6" class="empty">No hay asesores para este periodo y filtros.</td></tr>'
+    : '<tr><td colspan="6" class="empty">Sin datos disponibles.</td></tr>';
   const counts = totals(rows);
   document.querySelector('#dashboardTotals').innerHTML = dashboardLoaded
-    ? `<tr><th scope="row" colspan="2">Total seleccionado</th><td class="numeric">${number(counts.total)}</td><td class="numeric">${number(counts.completed)}</td></tr>` : '';
+    ? `<tr><th scope="row" colspan="2">Total seleccionado</th>${cells(counts)}</tr>` : '';
+  for (const [selector, data] of [['#dashboardSubjectsRows', dashboardSubjects], ['#dashboardSourcesRows', dashboardSources]]) {
+    const groups = groupCategories(data, dashboardTeam.value, dashboardAdvisor.value);
+    document.querySelector(selector).innerHTML = dashboardLoaded && groups.length
+      ? groups.map(row => `<tr><th scope="row">${escapeHTML(row.label)}</th>${cells(row)}</tr>`).join('')
+      : `<tr><td colspan="5" class="empty">${dashboardLoaded ? 'No hay citas para estos filtros.' : 'Sin datos disponibles.'}</td></tr>`;
+  }
+  document.querySelector('#dashboardUnresolved').textContent = dashboardLoaded
+    ? `${number(counts.unresolved)} citas del total todavía no tienen uno de los tres resultados. Se conserva su estado anterior, sin reclasificarlas.` : '';
   if (dashboardLoaded) {
     document.querySelector('#dashboardStatus').textContent = counts.total
       ? 'Indicadores actualizados para el periodo y filtros seleccionados.'
@@ -497,6 +517,8 @@ async function loadDashboard() {
   const request = ++dashboardRequest;
   const { start, end } = window.AppointmentDashboard.period(dashboardDate, dashboardMode);
   dashboardData = [];
+  dashboardSubjects = [];
+  dashboardSources = [];
   dashboardLoaded = false;
   updateDashboardPeriod();
   renderDashboard();
@@ -506,18 +528,22 @@ async function loadDashboard() {
   document.querySelector('#dashboardRetry').hidden = true;
   document.querySelector('#dashboardResults').setAttribute('aria-busy', 'true');
   try {
-    const { data, error } = await supabaseClient.rpc('appointment_dashboard', { period_start: start, period_end: end });
+    const { data, error } = await supabaseClient.rpc('appointment_outcome_dashboard', { period_start: start, period_end: end });
     if (request !== dashboardRequest || !window.AppointmentDashboard.canView(currentProfile)) return;
     if (error) throw error;
-    dashboardData = data || [];
+    const metrics = window.AppointmentDashboard.normalize(data);
+    dashboardData = metrics.advisors;
+    dashboardSubjects = metrics.subjects;
+    dashboardSources = metrics.sources;
     dashboardLoaded = true;
     updateDashboardAdvisorOptions();
     renderDashboard();
   } catch (error) {
     if (request !== dashboardRequest || !window.AppointmentDashboard.canView(currentProfile)) return;
-    const missingFunction = ['PGRST202', '42883'].includes(error?.code);
+    const missingFunction = ['PGRST202', '42883'].includes(error?.code) || error?.message === 'DASHBOARD_OUTCOMES_UPDATE';
     status.textContent = missingFunction
-      ? 'Falta activar el dashboard en Supabase. Ejecuta supabase/add-appointment-dashboard.sql en SQL Editor.'
+      ? 'Falta actualizar los resultados del dashboard. Ejecuta supabase/add-appointment-outcomes-dashboard.sql en SQL Editor.'
+      : error?.message === 'DASHBOARD_OUTCOMES_FORMAT' ? 'Los indicadores no llegaron completos o sus totales no coinciden. Vuelve a intentar; no se muestran ceros engañosos.'
       : readableError(error, 'No fue posible cargar los indicadores.');
     status.classList.add('error');
     document.querySelector('#dashboardRetry').hidden = false;
@@ -571,7 +597,7 @@ function openAppointmentDialog(appointment = null) {
   document.querySelector('#saveAppointment').textContent = appointment ? 'Guardar cambios' : 'Guardar cita';
 
   if (appointment) {
-    ['subject', 'date', 'time', 'client', 'phone', 'property', 'status', 'notes'].forEach(name => { appointmentForm.elements[name].value = appointment[name] || ''; });
+    ['subject', 'date', 'time', 'client', 'phone', 'property', 'notes'].forEach(name => { appointmentForm.elements[name].value = appointment[name] || ''; });
     formTeam.value = appointment.team;
     setAdvisorOptions(formAdvisor, appointment.team, appointment.advisorId);
     if (![...formAdvisor.options].some(option => option.value === appointment.advisorId)) {
@@ -582,24 +608,28 @@ function openAppointmentDialog(appointment = null) {
     setAdvisorOptions(formAdvisor, currentProfile.team, currentProfile.id);
     appointmentForm.elements.date.value = dateKey(selectedDate);
     appointmentForm.elements.time.value = '10:00';
-    appointmentForm.elements.status.value = 'pending';
+    appointmentForm.elements.status.value = '';
   } else if (canManageOwnTeamAppointments() && !isGlobalAppointmentManager()) {
     formTeam.value = currentProfile.team;
     setAdvisorOptions(formAdvisor, currentProfile.team);
     appointmentForm.elements.date.value = dateKey(selectedDate);
     appointmentForm.elements.time.value = '10:00';
-    appointmentForm.elements.status.value = 'pending';
+    appointmentForm.elements.status.value = '';
   } else {
     const initialTeam = teamFilter.value === 'all' ? '' : teamFilter.value;
     formTeam.value = initialTeam;
     setAdvisorOptions(formAdvisor, initialTeam);
     appointmentForm.elements.date.value = dateKey(selectedDate);
     appointmentForm.elements.time.value = '10:00';
-    appointmentForm.elements.status.value = 'pending';
+    appointmentForm.elements.status.value = '';
   }
 
   formTeam.disabled = !isGlobalAppointmentManager();
+  appointmentForm.elements.status.value = appointmentOutcomeValues.includes(appointment?.status) ? appointment.status : '';
   appointmentForm.elements.status.disabled = !canAssignAppointments();
+  document.querySelector('#appointmentStatusHint').textContent = appointment && !appointmentOutcomeValues.includes(appointment.status)
+    ? `Estado anterior: ${statusLabel[appointment.status] || 'Sin resultado'}. Se conserva al guardar si no eliges un resultado.`
+    : 'Actualiza el resultado cuando se conozca; una cita futura no se marca como realizada automáticamente.';
   updateCaptureSourceRequirement(appointment);
   propertyPicker.open(appointment);
   appointmentDialog.showModal();
@@ -651,7 +681,7 @@ async function saveAppointment(event) {
     advisor_id: formAdvisor.value,
     property: appointmentForm.elements.property.value.trim(),
     capture_source: appointmentForm.elements.captureSource.value || null,
-    status: appointmentForm.elements.status.value,
+    status: appointmentForm.elements.status.value || existing?.status || 'pending',
     notes: appointmentForm.elements.notes.value.trim(),
   };
   if (!payload.subject) {
@@ -713,6 +743,10 @@ async function saveAppointment(event) {
   }
   if (session !== appointmentsSession || write !== appointmentWriteRequest) return;
   if (error) {
+    if (error.code === '22P02' && /rented|appointment_status/i.test(error.message || '')) {
+      showToast('Falta activar Arrendado en Supabase. Ejecuta supabase/add-appointment-outcomes-dashboard.sql. El formulario se conserva.');
+      return;
+    }
     if (['PGRST204', '42703'].includes(error.code) && /simi_property_(code|url)/i.test(error.message || '')) {
       showToast('Falta ejecutar supabase/add-simi-property-catalog.sql. Tu formulario se conserva; también puedes usar la dirección manual.');
       return;

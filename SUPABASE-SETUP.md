@@ -17,7 +17,7 @@ Después, ejecuta una sola vez `supabase/expand-unique-advisor-colors.sql`. Esta
 
 Finalmente, ejecuta una sola vez `supabase/add-appointment-creators.sql` para que el detalle de cada cita pueda mostrar el nombre del usuario que la creó sin exponer otros datos de su perfil.
 
-Para activar el dashboard en un proyecto existente, ejecuta también `supabase/add-appointment-dashboard.sql` en **SQL Editor**. No requiere nuevas Edge Functions. Las instalaciones nuevas ya incluyen esta función en `supabase/schema.sql`.
+Para activar los resultados y el dashboard actual en un proyecto existente que ya tiene **Captado**, ejecuta `supabase/add-appointment-outcomes-dashboard.sql` en **SQL Editor**, antes de publicar el frontend. La función anterior de `supabase/add-appointment-dashboard.sql` se conserva por compatibilidad, pero no es necesario volver a ejecutar ese archivo. No requiere nuevas Edge Functions. Las instalaciones nuevas ya incluyen ambos dashboards en `supabase/schema.sql`.
 
 Para añadir **Captado**, ejecuta `supabase/add-appointment-capture-source.sql` y después `supabase/require-capture-source-for-commercial-visits.sql` en **SQL Editor**, antes de publicar el formulario actualizado. Si ya ejecutaste el primer archivo, ejecuta únicamente el segundo para ajustar la obligatoriedad a **Visita comercial**. Ninguno modifica las citas existentes. Tras publicar, recarga la aplicación en los dispositivos abiertos: las visitas comerciales nuevas necesitan el medio de captación. Las instalaciones nuevas ya incluyen la regla final en `supabase/schema.sql`.
 
@@ -87,16 +87,39 @@ La paleta disponible es Ámbar, Turquesa, Azul, Violeta, Coral, Esmeralda, Índi
 - Nadie puede consultar la agenda hasta cambiar su contraseña temporal.
 - Solo el administrador y la supervisora pueden abrir el dashboard y ejecutar su consulta de indicadores. La capacidad de gestionar citas de un equipo no concede acceso al dashboard.
 
+## Estados y resultados de citas
+
+- **Estado** ofrece únicamente **Realizada**, **Arrendado** y **Cancelado** como resultados seleccionables.
+- Una cita nueva puede guardarse con **Sin resultado todavía**; internamente queda `pending`. No se marca como realizada automáticamente, aunque cambie su fecha.
+- Las citas antiguas pendientes o confirmadas conservan su estado si se editan otros datos sin elegir un resultado. No se reclasifica el historial.
+- Los resultados se guardan como `completed`, `rented` y `cancelled`, respectivamente. Se puede cambiar de un resultado a otro, pero no borrar un resultado ya registrado ni asignar Confirmada a una cita nueva.
+- Se mantienen los permisos existentes: el Estado está deshabilitado para asesores sin capacidad de gestionar citas; administrador, supervisora y gestoras conservan su alcance de edición.
+
+### Activar esta actualización desde el panel de Supabase
+
+Para el proyecto que ya tiene Captado y el catálogo SIMI funcionando:
+
+1. Abre el proyecto en **Supabase → SQL Editor → New query**.
+2. Copia **todo** el contenido de **`supabase/add-appointment-outcomes-dashboard.sql`**, pulsa **Run** y confirma que termine sin errores.
+3. Después publica juntos **`index.html`**, **`app.js`** y **`dashboard.js`** actualizados en el alojamiento de la agenda.
+4. Recarga con **Ctrl + F5** e ingresa como administrador o supervisora. Comprueba los tres resultados y los desgloses del Dashboard, cambiando periodo, equipo y asesor.
+
+**Ejecuta solo este nuevo script para esta actualización.** No vuelvas a ejecutar `schema.sql`, las migraciones antiguas ni las de SIMI. No es necesario desplegar funciones, cambiar secretos o sincronizar de nuevo el catálogo. Este ajuste no modifica las citas existentes, el catálogo ni los permisos de la agenda. Las pruebas locales no sustituyen la comprobación con una sesión autenticada después de publicar.
+
 ## Dashboard de citas
 
 - Disponible en escritorio y celular para los roles `admin` y `supervisor`.
 - Permite seleccionar semana (lunes a domingo) o mes calendario, equipo y asesor.
-- Muestra únicamente asesor, equipo, total de citas y citas realizadas; incluye un resumen separado de Arrendamientos y Ventas.
-- El total incluye todos los estados, también las canceladas. Las realizadas son únicamente las citas con estado `completed`.
+- Muestra **total de citas, realizadas, arrendadas y canceladas** por asesor, con resúmenes separados de Arrendamientos y Ventas y tablas por **asunto** y **Captado**. Todos los desgloses usan los mismos filtros.
+- Cada cita cuenta en un solo resultado: Arrendado no suma también como Realizada. Arrendadas cuenta citas con ese resultado, no inmuebles distintos ni contratos.
+- El total incluye todos los estados. Se indica cuántas citas siguen sin uno de los tres resultados; por eso la suma de realizadas, arrendadas y canceladas puede ser menor que el total.
+- Los asuntos históricos se conservan y las citas antiguas sin Captado se agrupan como **Sin registrar**.
 - Se usa la fecha de la cita, no la de creación, y el asesor asignado, no el usuario que la registró.
 - Los asesores activos aparecen con cero aunque no tengan citas. Los inactivos aparecen cuando tienen citas en el periodo.
 - El equipo se toma del registro de la cita, para respetar el equipo guardado en el historial. Si un asesor tiene citas en ambos equipos, aparece una fila por equipo.
-- Los indicadores se calculan en Supabase, sin depender del límite de citas descargadas por la agenda, y se actualizan al recibir cambios de citas en tiempo real.
+- Los indicadores se calculan en Supabase mediante `appointment_outcome_dashboard(date, date)`, que devuelve un solo objeto JSON con los tres desgloses agregados. No depende de las citas descargadas por la agenda ni trunca las agrupaciones al límite REST de 1.000 filas.
+- La consulta no devuelve clientes, teléfonos, direcciones, notas ni datos del catálogo. Solo pueden ejecutarla administradores y supervisoras activos que ya cambiaron su contraseña temporal.
+- Se actualizan al recibir cambios de citas en tiempo real. El frontend comprueba que los resultados y los tres desgloses coincidan: una respuesta incompleta muestra un error y permite reintentar, en vez de presentar ceros engañosos.
 - Las citas eliminadas definitivamente no forman parte de las estadísticas.
 - Los permisos de lectura de la agenda no cambian: todos los usuarios activos siguen consultando las citas. La restricción adicional se aplica a la pestaña y a la función de indicadores.
 
@@ -108,7 +131,7 @@ La paleta disponible es Ámbar, Turquesa, Azul, Violeta, Coral, Esmeralda, Índi
 - Las visitas comerciales antiguas sin medio registrado conservan la compatibilidad: pueden editarse manteniendo el mismo asunto sin completar ese dato.
 - Al cambiar otro asunto a **Visita comercial**, hay que seleccionar el medio. Si una visita comercial ya tiene un medio, no puede eliminarse mientras mantenga ese asunto.
 - Para otros asuntos puede registrarse, cambiarse o eliminarse el medio. El formulario adapta la validación al cambiar el asunto sin borrar automáticamente la selección.
-- No cambia los permisos de creación o edición de citas ni los indicadores del dashboard.
+- No cambia los permisos de creación o edición de citas. El dashboard de resultados incluye un desglose por este medio de captación.
 
 ## Buscador de inmuebles SIMI
 

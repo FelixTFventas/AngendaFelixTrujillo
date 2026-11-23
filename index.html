@@ -170,10 +170,16 @@
     .dashboard-team.rental { border-top-color: var(--warn-fg); }
     .dashboard-team h2 { margin: 0 0 22px; font-size: 19px; letter-spacing: -.01em; }
     .dashboard-counts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 0; }
-    .dashboard-counts > div + div { border-left: 1px solid var(--border); padding-left: 20px; }
+    .dashboard-counts > div:nth-child(even) { border-left: 1px solid var(--border); padding-left: 20px; }
     .dashboard-counts dt { color: var(--muted); font-size: 12px; }
     .dashboard-counts dd { margin: 5px 0 0; font: 600 clamp(30px, 4vw, 42px)/1.2 var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -.04em; }
     .dashboard-counts .completed { color: var(--success-fg); }
+    .dashboard-counts .rented { color: var(--info-fg); }
+    .dashboard-counts .cancelled { color: var(--danger); }
+    .dashboard-team-note { margin: 18px 0 0; color: var(--muted); font-size: 11px; }
+    .dashboard-breakdowns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 18px; }
+    .dashboard-breakdowns > section { min-width: 0; }
+    .dashboard-breakdowns .dashboard-table th, .dashboard-breakdowns .dashboard-table td { padding: 14px 16px; }
     .dashboard-table-scroll { overflow-x: auto; }
     .dashboard-table { width: 100%; border-collapse: collapse; text-align: left; }
     .dashboard-table caption { padding: 14px 20px; color: var(--muted); font-size: 12px; text-align: left; caption-side: bottom; }
@@ -273,6 +279,7 @@
     .detail-status.pending { background: var(--warn-bg); color: var(--warn-fg); }
     .detail-status.confirmed { background: var(--success-bg); color: var(--success-fg); }
     .detail-status.completed { background: var(--info-bg); color: var(--info-fg); }
+    .detail-status.rented { background: var(--success-bg); color: var(--success-fg); }
     .detail-status.cancelled { background: oklch(95% 0.04 25); color: var(--danger); }
     .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 24px; }
     .detail-item { min-width: 0; }
@@ -302,6 +309,7 @@
       .agenda-item:nth-child(odd) { border-right: 1px solid var(--border); }
       .advisors-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .admin-layout { grid-template-columns: 1fr; }
+      .dashboard-breakdowns { grid-template-columns: 1fr; }
     }
     @media (max-width: 700px) {
       body { padding-bottom: 72px; }
@@ -446,7 +454,7 @@
 
     <main class="dashboard-view" id="dashboardView" hidden>
       <section class="page-head">
-        <div><p class="eyebrow">Seguimiento comercial</p><h1>Dashboard de citas</h1><p class="dashboard-intro">Resultados por equipo y asesor, en un solo lugar.</p></div>
+        <div><p class="eyebrow">Seguimiento comercial</p><h1>Dashboard de citas</h1><p class="dashboard-intro">Realizadas, arrendadas y canceladas por asesor, asunto y medio de captación.</p></div>
         <div class="segmented" id="dashboardPeriodSwitcher" role="group" aria-label="Periodo del dashboard"><button class="active" data-period="week" aria-pressed="true">Semana</button><button data-period="month" aria-pressed="false">Mes</button></div>
       </section>
       <section class="dashboard-toolbar" aria-label="Filtros del dashboard">
@@ -471,14 +479,37 @@
           <div class="dashboard-table-scroll" role="region" aria-label="Resultados por asesor" tabindex="0">
             <table class="dashboard-table" aria-describedby="dashboardTableDescription">
               <caption>Asignadas al asesor responsable y contadas por la fecha de la cita.</caption>
-              <thead><tr><th scope="col">Asesor</th><th scope="col">Equipo</th><th scope="col" class="numeric">Total de citas</th><th scope="col" class="numeric">Citas realizadas</th></tr></thead>
+              <thead><tr><th scope="col">Asesor</th><th scope="col">Equipo</th><th scope="col" class="numeric">Total de citas</th><th scope="col" class="numeric">Realizadas</th><th scope="col" class="numeric">Arrendadas</th><th scope="col" class="numeric">Canceladas</th></tr></thead>
               <tbody id="dashboardRows"></tbody>
               <tfoot id="dashboardTotals"></tfoot>
             </table>
           </div>
         </section>
+        <div class="dashboard-breakdowns">
+          <section class="admin-card" aria-labelledby="dashboardSubjectsTitle">
+            <div class="admin-card-head"><h2 id="dashboardSubjectsTitle">Por asunto de la cita</h2><p>Qué tipos de citas se atienden y cómo terminan.</p></div>
+            <div class="dashboard-table-scroll" role="region" aria-label="Resultados por asunto" tabindex="0">
+              <table class="dashboard-table">
+                <caption>Mismo periodo, equipo y asesor seleccionados arriba.</caption>
+                <thead><tr><th scope="col">Asunto</th><th scope="col" class="numeric">Total</th><th scope="col" class="numeric">Realizadas</th><th scope="col" class="numeric">Arrendadas</th><th scope="col" class="numeric">Canceladas</th></tr></thead>
+                <tbody id="dashboardSubjectsRows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="admin-card" aria-labelledby="dashboardSourcesTitle">
+            <div class="admin-card-head"><h2 id="dashboardSourcesTitle">Por Captado</h2><p>De dónde llegan las citas y sus resultados.</p></div>
+            <div class="dashboard-table-scroll" role="region" aria-label="Resultados por medio de captación" tabindex="0">
+              <table class="dashboard-table">
+                <caption>Sin registrar conserva las citas antiguas sin medio de captación.</caption>
+                <thead><tr><th scope="col">Captado</th><th scope="col" class="numeric">Total</th><th scope="col" class="numeric">Realizadas</th><th scope="col" class="numeric">Arrendadas</th><th scope="col" class="numeric">Canceladas</th></tr></thead>
+                <tbody id="dashboardSourcesRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+        <p class="dashboard-note" id="dashboardUnresolved"></p>
       </div>
-      <p class="dashboard-note">El total incluye todos los estados, también las canceladas. Solo las citas marcadas como “Realizada” cuentan como realizadas. Las citas eliminadas no se incluyen.</p>
+      <p class="dashboard-note">Cada cita cuenta en un solo resultado. Arrendadas mide citas marcadas como Arrendado, no inmuebles distintos. El total también incluye citas sin resultado; las eliminadas no se cuentan.</p>
     </main>
 
     <main class="admin-view" id="adminView" hidden>
@@ -588,7 +619,7 @@
           </select>
           <span class="field-hint" id="captureSourceHint">Obligatorio solo para “Visita comercial”.</span>
         </div>
-        <div class="field"><label for="status">Estado</label><select id="status" name="status"><option value="pending">Pendiente</option><option value="confirmed">Confirmada</option><option value="completed">Realizada</option><option value="cancelled">Cancelada</option></select></div>
+        <div class="field"><label for="status">Estado</label><select id="status" name="status" aria-describedby="appointmentStatusHint"><option value="" selected disabled hidden>Sin resultado todavía</option><option value="completed">Realizada</option><option value="rented">Arrendado</option><option value="cancelled">Cancelado</option></select><span class="field-hint" id="appointmentStatusHint">Actualiza el resultado cuando se conozca; una cita futura no se marca como realizada automáticamente.</span></div>
         <div class="field full"><label for="notes">Notas</label><textarea id="notes" name="notes" placeholder="Indicaciones relevantes para la cita"></textarea></div>
       </div>
       <div class="form-actions"><button class="ghost close-secondary" type="button">Cancelar</button><button class="primary" id="saveAppointment" type="submit">Guardar cita</button></div>

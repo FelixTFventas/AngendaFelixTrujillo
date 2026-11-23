@@ -9,10 +9,17 @@ const pickerScript = readFileSync(require.resolve('../property-picker.js'), 'utf
 const app = readFileSync(require.resolve('../app.js'), 'utf8');
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const sample = [
-  { advisor_id: 'a', advisor_name: 'Ana <Ventas>', team: 'sales', active: true, total: 8, completed: 5 },
-  { advisor_id: 'b', advisor_name: 'Luis', team: 'rental', active: true, total: 4, completed: 2 },
-  { advisor_id: 'c', advisor_name: 'Asesor inactivo', team: 'sales', active: false, total: 2, completed: 1 },
+  { advisor_id: 'a', advisor_name: 'Ana <Ventas>', team: 'sales', active: true, total: 8, completed: 5, rented: 1, cancelled: 1, unresolved: 1 },
+  { advisor_id: 'b', advisor_name: 'Luis', team: 'rental', active: true, total: 4, completed: 2, rented: 1, cancelled: 0, unresolved: 1 },
+  { advisor_id: 'c', advisor_name: 'Asesor inactivo', team: 'sales', active: false, total: 2, completed: 1, rented: 0, cancelled: 1, unresolved: 0 },
 ];
+function dashboardPayload(rows) {
+  const category = (row, label) => ({ advisor_id: row.advisor_id, team: row.team, label,
+    total: row.total, completed: row.completed, rented: row.rented, cancelled: row.cancelled, unresolved: row.unresolved });
+  return { protocol: 'outcomes-v1', advisors: rows,
+    subjects: rows.filter(row => row.total).map(row => category(row, 'Visita comercial')),
+    sources: rows.filter(row => row.total).map(row => category(row, row.active ? 'WhatsApp' : 'Sin registrar')) };
+}
 
 async function workspace(role = 'admin', options = {}) {
   const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'https://agenda.example/' });
@@ -90,9 +97,10 @@ async function workspace(role = 'admin', options = {}) {
       return query;
     },
     rpc: async (name, args) => {
-      if (name === 'appointment_dashboard') {
+      if (name === 'appointment_outcome_dashboard') {
         calls.push(JSON.parse(JSON.stringify(args)));
-        return response();
+        const result = await response();
+        return { ...result, data: Array.isArray(result.data) ? dashboardPayload(result.data) : result.data };
       }
       if (name === 'list_advisors') return { data: options.advisors || [], error: null };
       if (name === 'search_simi_properties') {
@@ -158,7 +166,7 @@ test('tabla, resúmenes por equipo, filtros independientes y nombres seguros', a
     assert.equal(ui.query('#dashboardRows').rows.length, 3);
     assert.ok(ui.query('#dashboardRows').textContent.includes('Ana <Ventas>'));
     assert.equal(ui.query('#dashboardRows ventas'), null);
-    assert.equal(ui.query('#dashboardTotals').textContent, 'Total seleccionado148');
+    assert.equal(ui.query('#dashboardTotals').textContent, 'Total seleccionado14822');
     assert.equal(ui.query('.dashboard-team.rental dd').textContent, '4');
     assert.equal(ui.query('.dashboard-team.sales dd').textContent, '10');
     await ui.change('#dashboardTeam', 'sales');
@@ -168,7 +176,7 @@ test('tabla, resúmenes por equipo, filtros independientes y nombres seguros', a
     assert.ok(ui.query('#dashboardAdvisor option[value="c"]').textContent.includes('inactivo'));
     await ui.change('#dashboardAdvisor', 'a');
     assert.equal(ui.query('#dashboardRows').rows.length, 1);
-    assert.equal(ui.query('#dashboardTotals').textContent, 'Total seleccionado85');
+    assert.equal(ui.query('#dashboardTotals').textContent, 'Total seleccionado8511');
     await ui.change('#dashboardTeam', 'rental');
     assert.equal(ui.query('#dashboardAdvisor').value, 'all');
     assert.equal(ui.query('#dashboardRows').rows.length, 1);
@@ -199,14 +207,14 @@ test('RPC ausente muestra instrucciones y permite reintentar, sin ceros engaños
   try {
     ui.setResponse(async () => ({ error: { code: 'PGRST202', message: 'Function not found' } }));
     await ui.click('[data-section="dashboard"]');
-    assert.ok(ui.query('#dashboardStatus').textContent.includes('supabase/add-appointment-dashboard.sql'));
+    assert.ok(ui.query('#dashboardStatus').textContent.includes('supabase/add-appointment-outcomes-dashboard.sql'));
     assert.equal(ui.query('#dashboardRetry').hidden, false);
     assert.equal(ui.query('.dashboard-team dd').textContent, '—');
     assert.equal(ui.query('#dashboardTotals').textContent, '');
     ui.setResponse(async () => ({ data: [], error: null }));
     await ui.click('#dashboardRetry');
     assert.equal(ui.query('#dashboardRetry').hidden, true);
-    assert.equal(ui.query('#dashboardTotals').textContent, 'Total seleccionado00');
+    assert.equal(ui.query('#dashboardTotals').textContent, 'Total seleccionado0000');
     assert.ok(ui.query('#dashboardStatus').textContent.includes('No hay citas'));
   } finally { ui.dom.window.close(); }
 });
@@ -223,7 +231,7 @@ test('una respuesta antigua no sobrescribe el periodo más reciente', async () =
     finish({ data: sample, error: null });
     await settle();
     assert.equal(ui.query('#dashboardRows').rows.length, 1);
-    assert.equal(ui.query('#dashboardTotals').textContent, 'Total seleccionado85');
+    assert.equal(ui.query('#dashboardTotals').textContent, 'Total seleccionado8511');
     assert.equal(ui.query('#dashboardResults').getAttribute('aria-busy'), 'false');
   } finally { ui.dom.window.close(); }
 });
@@ -1405,5 +1413,154 @@ test('una respuesta de guardado sin registro confirmado no muestra éxito ni bor
     assert.equal(ui.query('#appointmentDialog').open, true);
     assert.equal(ui.window.filteredAppointments().length, 1);
     assert.ok(ui.query('#toast').textContent.includes('evitar duplicados'));
+  } finally { ui.dom.window.close(); }
+});
+
+test('Estado ofrece únicamente tres resultados seleccionables sin marcar citas nuevas como realizadas', async () => {
+  const ui = await workspace('admin', { advisors: appointmentAdvisors });
+  try {
+    await fillNewAppointment(ui);
+    const status = ui.query('#status');
+    assert.deepEqual(Array.from(status.options).filter(option => !option.hidden && !option.disabled).map(option => option.textContent),
+      ['Realizada', 'Arrendado', 'Cancelado']);
+    assert.equal(status.value, '');
+    assert.equal(status.required, false);
+    assert.equal(status.querySelector('option[value="pending"]'), null);
+    assert.equal(status.querySelector('option[value="confirmed"]'), null);
+    ui.query('#date').value = '2027-01-01';
+    assert.equal(ui.query('#appointmentForm').checkValidity(), true);
+    await ui.window.saveAppointment({ preventDefault() {} });
+    assert.equal(ui.saved[0].payload.status, 'pending');
+  } finally { ui.dom.window.close(); }
+});
+
+test('el asesor sin gestión mantiene Estado deshabilitado y crea su cita sin resultado', async () => {
+  const ui = await workspace('advisor', {
+    profile: { can_manage_team_appointments: false },
+    advisors: [{ ...appointmentAdvisors[0], id: 'user' }],
+  });
+  try {
+    await ui.click('#newAppointment');
+    assert.equal(ui.query('#status').disabled, true);
+    assert.equal(ui.query('#status').value, '');
+    await ui.change('#subject', 'Recepción Propietario');
+    ui.query('#client').value = 'Cliente';
+    await ui.window.saveAppointment({ preventDefault() {} });
+    assert.equal(ui.saved.length, 1);
+    assert.equal(ui.saved[0].payload.advisor_id, 'user');
+    assert.equal(ui.saved[0].payload.status, 'pending');
+    assert.equal(ui.calls.length, 0);
+  } finally { ui.dom.window.close(); }
+});
+
+test('cada resultado nuevo se guarda, aparece en el detalle y se recupera al editar', async () => {
+  for (const [value, label] of [['completed', 'Realizada'], ['rented', 'Arrendado'], ['cancelled', 'Cancelado']]) {
+    const ui = await workspace('admin', { advisors: appointmentAdvisors });
+    try {
+      await fillNewAppointment(ui);
+      await ui.change('#status', value);
+      await ui.window.saveAppointment({ preventDefault() {} });
+      await settle();
+      assert.equal(ui.saved[0].payload.status, value);
+      ui.window.openDetails('new-appointment');
+      assert.equal(ui.query('.detail-status').textContent, label);
+      await ui.click('#editAppointment');
+      assert.equal(ui.query('#status').value, value);
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('citas pendientes o confirmadas antiguas conservan su estado al editar otros datos', async () => {
+  for (const value of ['pending', 'confirmed']) {
+    const appointment = { ...oldAppointment, status: value };
+    const ui = await workspace('admin', { advisors: appointmentAdvisors, appointments: [appointment] });
+    try {
+      ui.window.openAppointmentDialog(ui.window.mapAppointment(appointment));
+      assert.equal(ui.query('#status').value, '');
+      assert.ok(ui.query('#appointmentStatusHint').textContent.includes('Estado anterior'));
+      await ui.window.saveAppointment({ preventDefault() {} });
+      assert.equal(ui.saved[0].payload.status, value);
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('Arrendado sin migración conserva el formulario y muestra el script nuevo', async () => {
+  const ui = await workspace('admin', { advisors: appointmentAdvisors,
+    saveError: { code: '22P02', message: 'invalid input value for enum appointment_status: rented' } });
+  try {
+    await fillNewAppointment(ui);
+    await ui.change('#status', 'rented');
+    await ui.window.saveAppointment({ preventDefault() {} });
+    assert.equal(ui.query('#appointmentDialog').open, true);
+    assert.equal(ui.query('#status').value, 'rented');
+    assert.equal(ui.query('#saveAppointment').disabled, false);
+    assert.ok(ui.query('#toast').textContent.includes('add-appointment-outcomes-dashboard.sql'));
+  } finally { ui.dom.window.close(); }
+});
+
+function detailedDashboard() {
+  const row = (advisor_id, team, label, completed, rented, cancelled, unresolved) =>
+    ({ advisor_id, team, label, completed, rented, cancelled, unresolved, total: completed + rented + cancelled + unresolved });
+  return {
+    protocol: 'outcomes-v1', advisors: sample,
+    subjects: [row('a', 'sales', 'Visita comercial', 3, 1, 0, 1), row('a', 'sales', 'Entrega al arrendatario', 2, 0, 1, 0),
+      row('b', 'rental', 'Visita comercial', 1, 1, 0, 0), row('b', 'rental', 'Entrega al arrendatario', 1, 0, 0, 1),
+      row('c', 'sales', 'Asunto anterior <seguro>', 1, 0, 1, 0)],
+    sources: [row('a', 'sales', 'WhatsApp', 3, 1, 0, 0), row('a', 'sales', 'Facebook', 2, 0, 1, 1),
+      row('b', 'rental', 'WhatsApp', 0, 1, 0, 1), row('b', 'rental', 'Fijo', 2, 0, 0, 0),
+      row('c', 'sales', 'Sin registrar', 1, 0, 1, 0)],
+  };
+}
+
+test('Dashboard mide resultados por asesor, asuntos y Captado con los mismos filtros sin dobles conteos', async () => {
+  const ui = await workspace();
+  try {
+    ui.setResponse(async () => ({ data: detailedDashboard(), error: null }));
+    await ui.click('[data-section="dashboard"]');
+    assert.deepEqual(Array.from(ui.query('#dashboardTotals').querySelectorAll('td')).map(cell => cell.textContent), ['14', '8', '2', '2']);
+    assert.ok(ui.query('#dashboardUnresolved').textContent.startsWith('2 citas'));
+    assert.equal(ui.query('#dashboardSubjectsRows').rows.length, 3);
+    assert.equal(ui.query('#dashboardSubjectsRows').rows[0].cells[0].textContent, 'Visita comercial');
+    assert.deepEqual(Array.from(ui.query('#dashboardSubjectsRows').rows[0].cells).slice(1).map(cell => cell.textContent), ['7', '4', '2', '0']);
+    assert.equal(ui.query('#dashboardSubjectsRows seguro'), null);
+    assert.ok(ui.query('#dashboardSourcesRows').textContent.includes('Sin registrar'));
+    await ui.change('#dashboardAdvisor', 'a');
+    assert.equal(ui.query('#dashboardSubjectsRows').rows.length, 2);
+    assert.equal(ui.query('#dashboardSourcesRows').rows.length, 2);
+    assert.equal(ui.query('#dashboardSourcesRows').textContent.includes('Sin registrar'), false);
+    assert.deepEqual(Array.from(ui.query('#dashboardTotals').querySelectorAll('td')).map(cell => cell.textContent), ['8', '5', '1', '1']);
+    await ui.change('#dashboardTeam', 'rental');
+    assert.equal(ui.query('#dashboardAdvisor').value, 'all');
+    assert.deepEqual(Array.from(ui.query('#dashboardTotals').querySelectorAll('td')).map(cell => cell.textContent), ['4', '2', '1', '0']);
+    assert.equal(ui.query('#dashboardSourcesRows').textContent.includes('Facebook'), false);
+    assert.ok(ui.query('#dashboardSourcesRows').textContent.includes('Fijo'));
+    assert.equal(ui.calls.length, 1, 'cambiar filtros no consulta SIMI ni descarga citas individuales');
+  } finally { ui.dom.window.close(); }
+});
+
+test('el dashboard no muestra métricas falsas si faltan resultados o un desglose está truncado', async () => {
+  const ui = await workspace();
+  try {
+    const invalid = detailedDashboard();
+    invalid.sources = [];
+    ui.setResponse(async () => ({ data: invalid, error: null }));
+    await ui.click('[data-section="dashboard"]');
+    assert.equal(ui.query('#dashboardTotals').textContent, '');
+    assert.equal(ui.query('#dashboardRetry').hidden, false);
+    assert.ok(ui.query('#dashboardStatus').textContent.includes('totales no coinciden'));
+    assert.equal(ui.query('.dashboard-team dd').textContent, '—');
+  } finally { ui.dom.window.close(); }
+});
+
+test('cerrar sesión borra también los desgloses de asuntos, captación y citas sin resultado', async () => {
+  const ui = await workspace();
+  try {
+    await ui.click('[data-section="dashboard"]');
+    assert.ok(ui.query('#dashboardSubjectsRows').textContent);
+    assert.ok(ui.query('#dashboardSourcesRows').textContent);
+    await ui.click('#logoutButton');
+    assert.equal(ui.query('#dashboardSubjectsRows').textContent, '');
+    assert.equal(ui.query('#dashboardSourcesRows').textContent, '');
+    assert.equal(ui.query('#dashboardUnresolved').textContent, '');
   } finally { ui.dom.window.close(); }
 });
