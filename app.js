@@ -580,6 +580,31 @@ function updateCaptureSourceRequirement(appointment = appointments.find(item => 
       : 'Opcional para este asunto. Solo es obligatorio para “Visita comercial”.';
 }
 
+function updateOtherNotesValidity() {
+  const notes = appointmentForm.elements.notes;
+  notes.setCustomValidity(appointmentForm.elements.subject.value === 'Otros' && !notes.value.trim()
+    ? 'Describe en Notas para qué se utilizará este espacio.' : '');
+}
+
+function updateAppointmentSubject(appointment = appointments.find(item => item.id === appointmentForm.elements.id.value)) {
+  const other = appointmentForm.elements.subject.value === 'Otros';
+  appointmentForm.querySelectorAll('[data-appointment-standard]').forEach(field => { field.hidden = other; });
+  for (const name of ['client', 'phone', 'property', 'captureSource', 'status']) {
+    appointmentForm.elements[name].disabled = other || (name === 'status' && !canAssignAppointments());
+  }
+  appointmentForm.elements.client.required = !other;
+  appointmentForm.elements.notes.required = other;
+  document.querySelector('#appointmentNotesLabel').textContent = other ? 'Notas (obligatorio)' : 'Notas';
+  appointmentForm.elements.notes.placeholder = other
+    ? 'Describe para qué se utilizará este espacio' : 'Indicaciones relevantes para la cita';
+  document.querySelector('#formDialogDescription').textContent = other
+    ? 'Reserva un espacio en la agenda y explica su propósito en Notas.'
+    : appointment ? 'Actualiza la información y guarda los cambios.' : 'Registra los datos de la cita con el cliente.';
+  updateOtherNotesValidity();
+  updateCaptureSourceRequirement(appointment);
+  propertyPicker.updateContext();
+}
+
 function openAppointmentDialog(appointment = null) {
   if (appointment && !canManageAppointment(appointment)) return;
   appointmentForm.reset();
@@ -630,8 +655,8 @@ function openAppointmentDialog(appointment = null) {
   document.querySelector('#appointmentStatusHint').textContent = appointment && !appointmentOutcomeValues.includes(appointment.status)
     ? `Estado anterior: ${statusLabel[appointment.status] || 'Sin resultado'}. Se conserva al guardar si no eliges un resultado.`
     : 'Actualiza el resultado cuando se conozca; una cita futura no se marca como realizada automáticamente.';
-  updateCaptureSourceRequirement(appointment);
   propertyPicker.open(appointment);
+  updateAppointmentSubject(appointment);
   appointmentDialog.showModal();
   appointmentForm.elements.subject.focus();
 }
@@ -640,6 +665,7 @@ function openDetails(id) {
   const appointment = appointments.find(item => item.id === id);
   if (!appointment) return;
   activeAppointmentId = id;
+  const other = appointment.subject === 'Otros';
   const status = statusLabel[appointment.status] ? appointment.status : 'pending';
   const formattedDate = capitalize(new Intl.DateTimeFormat('es', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(parseDate(appointment.date)));
   const formattedTime = formatTime(appointment.time);
@@ -647,21 +673,23 @@ function openDetails(id) {
   const propertyURL = window.SimiPropertyPicker.safeURL(appointment.simiPropertyURL);
   document.querySelector('#detailTitle').textContent = appointment.subject;
   document.querySelector('#detailSubtitle').textContent = `${teams[appointment.team] || 'Cita'} · ${formattedDate} a las ${formattedTime}`;
-  document.querySelector('#detailContent').innerHTML = `<span class="detail-status ${status}">${statusLabel[status]}</span><div class="detail-grid">
+  document.querySelector('#detailContent').innerHTML = `${other ? '' : `<span class="detail-status ${status}">${statusLabel[status]}</span>`}<div class="detail-grid">
+    ${other ? '' : `
     <div class="detail-item"><span class="detail-label">Cliente</span><p class="detail-value">${escapeHTML(appointment.client || 'No registrado')}</p></div>
-    <div class="detail-item"><span class="detail-label">Teléfono</span><p class="detail-value">${escapeHTML(appointment.phone || 'No registrado')}</p></div>
+    <div class="detail-item"><span class="detail-label">Teléfono</span><p class="detail-value">${escapeHTML(appointment.phone || 'No registrado')}</p></div>`}
     <div class="detail-item"><span class="detail-label">Asesor responsable</span><p class="detail-value advisor-inline advisor-color ${advisorColor(appointment.advisor, appointment.color)}">${escapeHTML(appointment.advisor || 'No registrado')}</p></div>
     <div class="detail-item"><span class="detail-label">Equipo</span><p class="detail-value">${escapeHTML(teams[appointment.team] || 'No registrado')}</p></div>
     <div class="detail-item"><span class="detail-label">Fecha y hora</span><p class="detail-value">${escapeHTML(formattedDate)}, ${escapeHTML(formattedTime)}</p></div>
     <div class="detail-item"><span class="detail-label">Creada por</span><p class="detail-value">${escapeHTML(creatorName)}</p></div>
-    <div class="detail-item full"><span class="detail-label">Inmueble o dirección</span><p class="detail-value">${escapeHTML(appointment.property || 'No registrado')}</p>${propertyURL ? `<a class="action-link" href="${escapeHTML(propertyURL)}" target="_blank" rel="noopener noreferrer">Ver inmueble ${escapeHTML(appointment.simiPropertyCode)}</a>` : ''}</div>
-    <div class="detail-item full"><span class="detail-label">Captado</span><p class="detail-value">${escapeHTML(appointment.captureSource || 'Sin registrar')}</p></div>
+    ${other ? '' : `<div class="detail-item full"><span class="detail-label">Inmueble o dirección</span><p class="detail-value">${escapeHTML(appointment.property || 'No registrado')}</p>${propertyURL ? `<a class="action-link" href="${escapeHTML(propertyURL)}" target="_blank" rel="noopener noreferrer">Ver inmueble ${escapeHTML(appointment.simiPropertyCode)}</a>` : ''}</div>
+    <div class="detail-item full"><span class="detail-label">Captado</span><p class="detail-value">${escapeHTML(appointment.captureSource || 'Sin registrar')}</p></div>`}
     <div class="detail-item full"><span class="detail-label">Notas</span><p class="detail-value detail-notes">${escapeHTML(appointment.notes || 'Sin notas adicionales.')}</p></div>
   </div>`;
   const phone = String(appointment.phone || '').replace(/\D/g, '');
   const whatsapp = document.querySelector('#whatsappAppointment');
-  whatsapp.hidden = !phone;
-  if (phone) whatsapp.href = `https://wa.me/${phone}?text=${encodeURIComponent(`Hola ${appointment.client}, te contacto para confirmar la cita de ${appointment.subject} el ${formattedDate} a las ${formattedTime}.`)}`;
+  whatsapp.hidden = other || !phone;
+  whatsapp.removeAttribute('href');
+  if (!other && phone) whatsapp.href = `https://wa.me/${phone}?text=${encodeURIComponent(`Hola ${appointment.client}, te contacto para confirmar la cita de ${appointment.subject} el ${formattedDate} a las ${formattedTime}.`)}`;
   document.querySelector('#editAppointment').hidden = !canManageAppointment(appointment);
   document.querySelector('#deleteAppointment').hidden = !canDeleteAppointment(appointment);
   detailDialog.showModal();
@@ -672,16 +700,17 @@ async function saveAppointment(event) {
   if (appointmentSaving || !currentProfile?.active || currentProfile.must_change_password) return;
   const existingId = appointmentForm.elements.id.value;
   const existing = appointments.find(appointment => appointment.id === existingId);
+  const other = appointmentForm.elements.subject.value === 'Otros';
   const payload = {
     appointment_date: appointmentForm.elements.date.value,
     appointment_time: appointmentForm.elements.time.value,
     subject: appointmentForm.elements.subject.value.trim(),
-    client: appointmentForm.elements.client.value.trim(),
-    phone: appointmentForm.elements.phone.value.trim(),
+    client: other ? existing?.client || '' : appointmentForm.elements.client.value.trim(),
+    phone: other ? existing?.phone || '' : appointmentForm.elements.phone.value.trim(),
     advisor_id: formAdvisor.value,
-    property: appointmentForm.elements.property.value.trim(),
-    capture_source: appointmentForm.elements.captureSource.value || null,
-    status: appointmentForm.elements.status.value || existing?.status || 'pending',
+    property: other ? existing?.property || '' : appointmentForm.elements.property.value.trim(),
+    capture_source: other ? existing?.captureSource || null : appointmentForm.elements.captureSource.value || null,
+    status: other ? existing?.status || 'pending' : appointmentForm.elements.status.value || existing?.status || 'pending',
     notes: appointmentForm.elements.notes.value.trim(),
   };
   if (!payload.subject) {
@@ -689,9 +718,19 @@ async function saveAppointment(event) {
     appointmentForm.elements.subject.focus();
     return;
   }
+  if (other && !payload.notes) {
+    showToast('Describe en Notas para qué se utilizará este espacio.');
+    appointmentForm.elements.notes.focus();
+    return;
+  }
   if (requiresCaptureSource(payload.subject, existing) && !payload.capture_source) {
     showToast('Selecciona por dónde fue captada la cita.');
     appointmentForm.elements.captureSource.focus();
+    return;
+  }
+  if (!other && !payload.client) {
+    showToast('Escribe el nombre del cliente.');
+    appointmentForm.elements.client.focus();
     return;
   }
   if (!payload.advisor_id) {
@@ -717,7 +756,7 @@ async function saveAppointment(event) {
     return;
   }
   const selectedProperty = propertyPicker.snapshot();
-  if (selectedProperty || existing?.simiPropertyCode) {
+  if (!other && (selectedProperty || existing?.simiPropertyCode)) {
     payload.simi_property_code = selectedProperty?.code || null;
     payload.simi_property_url = selectedProperty?.url || null;
   }
@@ -743,6 +782,10 @@ async function saveAppointment(event) {
   }
   if (session !== appointmentsSession || write !== appointmentWriteRequest) return;
   if (error) {
+    if (other && error.code === '23514' && /appointments_client_check/i.test(error.message || '')) {
+      showToast('Falta activar Otros en Supabase. Ejecuta supabase/add-other-appointment-subject.sql. El formulario se conserva.');
+      return;
+    }
     if (error.code === '22P02' && /rented|appointment_status/i.test(error.message || '')) {
       showToast('Falta activar Arrendado en Supabase. Ejecuta supabase/add-appointment-outcomes-dashboard.sql. El formulario se conserva.');
       return;
@@ -1136,7 +1179,11 @@ document.querySelector('#advisorsByTeam').addEventListener('click', event => {
 teamFilter.addEventListener('change', () => { setAdvisorOptions(advisorFilter, teamFilter.value, 'all', true); render(); });
 advisorFilter.addEventListener('change', render);
 formTeam.addEventListener('change', () => { setAdvisorOptions(formAdvisor, formTeam.value); propertyPicker.updateContext(); });
-appointmentForm.elements.subject.addEventListener('change', () => { updateCaptureSourceRequirement(); propertyPicker.updateContext(); });
+appointmentForm.elements.subject.addEventListener('change', () => {
+  updateAppointmentSubject();
+  if (appointmentForm.elements.subject.value === 'Otros') appointmentForm.elements.notes.focus();
+});
+appointmentForm.elements.notes.addEventListener('input', updateOtherNotesValidity);
 grid.addEventListener('click', event => {
   const appointmentTarget = event.target.closest('[data-appointment-id]');
   if (appointmentTarget) {

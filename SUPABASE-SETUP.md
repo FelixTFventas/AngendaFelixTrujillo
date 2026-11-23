@@ -123,6 +123,26 @@ Para el proyecto que ya tiene Captado y el catálogo SIMI funcionando:
 - Las citas eliminadas definitivamente no forman parte de las estadísticas.
 - Los permisos de lectura de la agenda no cambian: todos los usuarios activos siguen consultando las citas. La restricción adicional se aplica a la pestaña y a la función de indicadores.
 
+## Asunto Otros: reservar un espacio en la agenda
+
+- **Otros** se añade a los siete asuntos existentes. Permite registrar reuniones, capacitaciones y otras actividades sin inventar un cliente.
+- Al seleccionarlo solo quedan visibles **Asunto, Día, Hora, Equipo, Asesor responsable y Notas**. Los datos necesarios para ubicar y asignar el espacio siguen siendo obligatorios.
+- **Notas** es obligatorio y debe explicar para qué se utilizará el espacio; no se aceptan espacios en blanco. La validación se aplica en el formulario y en Supabase.
+- Se ocultan Cliente, Teléfono, Inmueble, Captado y Estado. Una reserva nueva guarda cliente, teléfono y dirección vacíos, Captado sin registrar y estado interno `pending`, sin resultado automático ni consultas a SIMI.
+- Al volver a otro asunto se restaura el formulario normal, el cliente obligatorio y Captado obligatorio únicamente para Visita comercial. Los borradores escritos antes de cambiar de asunto no se borran, pero no se envían al crear una reserva Otros.
+- Al cambiar una cita existente a Otros, se conservan sus datos ocultos, vínculos de inmueble y resultado anterior para no perder historial. El detalle de Otros muestra la asignación, la fecha y hora, el creador y las Notas, sin campos de cliente ni botón de WhatsApp.
+- Se mantienen todos los permisos actuales de creación y edición. La agenda muestra **Otros** y permite consultar las Notas en el detalle.
+- En el Dashboard estas reservas cuentan dentro del total y bajo el asunto **Otros**. Las nuevas suman como sin resultado; el texto de las Notas no se utiliza como categoría ni se devuelve en la consulta de indicadores.
+- La migración no modifica registros existentes. Si ya existía un asunto libre llamado Otros sin notas, se conserva y se deberá completar Notas al guardar cambios.
+
+### Activar Otros en el proyecto actual
+
+1. En **Supabase → SQL Editor → New query**, copia todo el contenido de **`supabase/add-other-appointment-subject.sql`** y pulsa **Run**.
+2. Si termina sin errores, publica juntos **`index.html`** y **`app.js`** actualizados.
+3. Recarga la agenda con **Ctrl + F5**. Crea una reserva con asunto Otros y Notas, comprueba su detalle y verifica que al volver a un asunto normal reaparezcan los campos habituales.
+
+Ejecuta **solo este nuevo script** para habilitar Otros si ya activaste los resultados y el Dashboard. No repitas `schema.sql`, el SQL de resultados ni las migraciones de SIMI. No requiere desplegar Edge Functions ni actualizar el catálogo. El ajuste ya está incluido en `schema.sql` para instalaciones nuevas.
+
 ## Medio de captación de la cita
 
 - **Captado** aparece debajo de **Inmueble o dirección**, con las opciones WhatsApp, Fijo, Finca Raíz, Proppit, Ciencuadras, Facebook e Instagram.
@@ -130,7 +150,7 @@ Para el proyecto que ya tiene Captado y el catálogo SIMI funcionando:
 - Se guarda en `appointments.capture_source` y se muestra también en el detalle y al editar.
 - Las visitas comerciales antiguas sin medio registrado conservan la compatibilidad: pueden editarse manteniendo el mismo asunto sin completar ese dato.
 - Al cambiar otro asunto a **Visita comercial**, hay que seleccionar el medio. Si una visita comercial ya tiene un medio, no puede eliminarse mientras mantenga ese asunto.
-- Para otros asuntos puede registrarse, cambiarse o eliminarse el medio. El formulario adapta la validación al cambiar el asunto sin borrar automáticamente la selección.
+- Para otros asuntos puede registrarse, cambiarse o eliminarse el medio, excepto en **Otros**, donde el campo se oculta. El formulario adapta la validación al cambiar el asunto sin borrar automáticamente la selección.
 - No cambia los permisos de creación o edición de citas. El dashboard de resultados incluye un desglose por este medio de captación.
 
 ## Buscador de inmuebles SIMI

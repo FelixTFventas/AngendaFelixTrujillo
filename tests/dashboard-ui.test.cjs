@@ -274,6 +274,7 @@ const subjectOptions = [
   'Devolución por el arrendatario',
   'Entrega al arrendatario',
   'Devolución al propietario',
+  'Otros',
 ];
 const appointmentAdvisors = [{ id: 'advisor', full_name: 'Ana', team: 'sales', color: 'blue', role: 'advisor' }];
 const oldAppointment = {
@@ -283,7 +284,7 @@ const oldAppointment = {
   advisor_name: 'Ana', advisor_team: 'sales', advisor_color: 'blue',
 };
 
-test('nueva cita ofrece exactamente los siete asuntos y obliga a seleccionar uno', async () => {
+test('nueva cita ofrece los siete asuntos y Otros y obliga a seleccionar uno', async () => {
   const ui = await workspace();
   try {
     await ui.click('#newAppointment');
@@ -353,7 +354,7 @@ test('se puede reemplazar un asunto antiguo por una opción de la lista', async 
     assert.equal(ui.saved[0].payload.subject, 'Visita comercial');
     ui.window.openAppointmentDialog(ui.window.mapAppointment({ ...oldAppointment, subject: 'Visita comercial' }));
     assert.equal(ui.query('#subject').value, 'Visita comercial');
-    assert.equal(ui.query('#subject').options.length, 8, 'no se duplican asuntos del catálogo');
+    assert.equal(ui.query('#subject').options.length, 9, 'no se duplican asuntos del catálogo');
   } finally { ui.dom.window.close(); }
 });
 
@@ -364,13 +365,13 @@ test('los asuntos antiguos no se acumulan ni se ofrecen al crear nuevas citas', 
     ui.window.openAppointmentDialog(appointment);
     ui.query('#appointmentDialog').close();
     ui.window.openAppointmentDialog({ ...appointment, subject: 'Segundo asunto antiguo' });
-    assert.equal(ui.query('#subject').options.length, 9);
+    assert.equal(ui.query('#subject').options.length, 10);
     assert.equal(ui.query('#subject').value, 'Segundo asunto antiguo');
     assert.equal([...ui.query('#subject').options].some(option => option.value === oldAppointment.subject), false);
     ui.query('#appointmentDialog').close();
     await ui.click('#newAppointment');
     assert.equal(ui.query('#subject').value, '');
-    assert.equal(ui.query('#subject').options.length, 8);
+    assert.equal(ui.query('#subject').options.length, 9);
     assert.equal(ui.query('#subject').checkValidity(), false);
   } finally { ui.dom.window.close(); }
 });
@@ -490,6 +491,10 @@ test('los demás asuntos permiten crear citas sin medio de captación', async ()
       await ui.change('#team', 'sales');
       await ui.change('#advisor', 'advisor');
       ui.query('#client').value = 'Cliente';
+      if (subject === 'Otros') {
+        ui.query('#notes').value = 'Capacitación del equipo';
+        ui.query('#notes').dispatchEvent(new ui.window.Event('input'));
+      }
       assert.equal(ui.query('#captureSource').required, false);
       assert.equal(ui.query('#appointmentForm').checkValidity(), true);
       await ui.window.saveAppointment({ preventDefault() {} });
@@ -1562,5 +1567,231 @@ test('cerrar sesión borra también los desgloses de asuntos, captación y citas
     assert.equal(ui.query('#dashboardSubjectsRows').textContent, '');
     assert.equal(ui.query('#dashboardSourcesRows').textContent, '');
     assert.equal(ui.query('#dashboardUnresolved').textContent, '');
+  } finally { ui.dom.window.close(); }
+});
+
+async function fillOtherAppointment(ui, notes = 'Capacitación del equipo') {
+  await ui.click('#newAppointment');
+  await ui.change('#subject', 'Otros');
+  await ui.change('#team', 'sales');
+  await ui.change('#advisor', 'advisor');
+  ui.query('#notes').value = notes;
+  ui.query('#notes').dispatchEvent(new ui.window.Event('input'));
+}
+
+test('Otros muestra solo la descripción y los datos para ubicar el espacio en la agenda', async () => {
+  const ui = await workspace('admin', { advisors: appointmentAdvisors });
+  try {
+    await fillOtherAppointment(ui);
+    for (const name of ['client', 'phone', 'property', 'captureSource', 'status']) {
+      const control = ui.query(`#${name}`);
+      assert.equal(control.closest('[data-appointment-standard]').hidden, true, name);
+      assert.equal(control.disabled, true, name);
+    }
+    for (const name of ['subject', 'date', 'time', 'team', 'advisor', 'notes']) {
+      assert.equal(ui.query(`#${name}`).closest('[hidden]'), null, name);
+      assert.equal(ui.query(`#${name}`).required, true, name);
+    }
+    assert.equal(ui.query('#client').required, false);
+    assert.equal(ui.query('#captureSource').required, false);
+    assert.equal(ui.query('#notes').placeholder, 'Describe para qué se utilizará este espacio');
+    assert.equal(ui.query('#simiPropertyPicker').hidden, true);
+    assert.equal(ui.query('#appointmentForm').checkValidity(), true);
+    await ui.window.saveAppointment({ preventDefault() {} });
+    const payload = ui.saved[0].payload;
+    assert.equal(payload.subject, 'Otros');
+    assert.equal(payload.notes, 'Capacitación del equipo');
+    assert.equal(payload.client, '');
+    assert.equal(payload.phone, '');
+    assert.equal(payload.property, '');
+    assert.equal(payload.capture_source, null);
+    assert.equal(payload.status, 'pending');
+    assert.equal(payload.advisor_id, 'advisor');
+    assert.equal(ui.propertyCalls.length, 0);
+    assert.equal(ui.functionCalls.length, 0);
+    assert.equal(ui.query('#agendaList strong').textContent, 'Otros');
+  } finally { ui.dom.window.close(); }
+});
+
+test('Otros exige Notas también con espacios y conserva el formulario si faltan', async () => {
+  const ui = await workspace('admin', { advisors: appointmentAdvisors });
+  try {
+    for (const notes of ['', '   ', '\n\t  ']) {
+      await fillOtherAppointment(ui, notes);
+      assert.equal(ui.query('#appointmentForm').checkValidity(), false);
+      await ui.window.saveAppointment({ preventDefault() {} });
+      assert.equal(ui.saved.length, 0);
+      assert.equal(ui.query('#appointmentDialog').open, true);
+      assert.ok(ui.query('#toast').textContent.includes('Describe en Notas'));
+      assert.equal(ui.window.document.activeElement, ui.query('#notes'));
+    }
+  } finally { ui.dom.window.close(); }
+});
+
+test('Otros se muestra en detalle con Notas seguras y vuelve a abrirse en modo simplificado', async () => {
+  const ui = await workspace('admin', { advisors: appointmentAdvisors });
+  try {
+    await fillOtherAppointment(ui, 'Reunión <img src=x onerror=alert(1)>');
+    await ui.window.saveAppointment({ preventDefault() {} });
+    await settle();
+    ui.window.openDetails('new-appointment');
+    assert.equal(ui.query('#detailTitle').textContent, 'Otros');
+    assert.ok(ui.query('.detail-notes').textContent.includes('<img src=x'));
+    assert.equal(ui.query('#detailContent img'), null);
+    assert.equal(ui.query('.detail-status'), null);
+    const labels = Array.from(ui.query('#detailContent').querySelectorAll('.detail-label')).map(label => label.textContent);
+    assert.deepEqual(labels, ['Asesor responsable', 'Equipo', 'Fecha y hora', 'Creada por', 'Notas']);
+    assert.equal(ui.query('#whatsappAppointment').hidden, true);
+    assert.equal(ui.query('#whatsappAppointment').hasAttribute('href'), false);
+    await ui.click('#editAppointment');
+    assert.equal(ui.query('#subject').value, 'Otros');
+    assert.equal(ui.query('#notes').required, true);
+    assert.equal(ui.query('#client').closest('[data-appointment-standard]').hidden, true);
+    ui.query('#notes').value = 'Reunión actualizada';
+    ui.query('#notes').dispatchEvent(new ui.window.Event('input'));
+    await ui.window.saveAppointment({ preventDefault() {} });
+    assert.equal(ui.saved.at(-1).operation, 'update');
+    assert.equal(ui.saved.at(-1).payload.notes, 'Reunión actualizada');
+  } finally { ui.dom.window.close(); }
+});
+
+test('cambiar entre Otros y una visita restaura el formulario, validaciones y borradores sin filtrarlos al guardar', async () => {
+  const ui = await workspace('admin', { advisors: appointmentAdvisors });
+  try {
+    await fillNewAppointment(ui, 'Visita comercial');
+    ui.query('#phone').value = '3001234567';
+    ui.query('#property').value = 'Dirección de prueba';
+    await ui.change('#status', 'completed');
+    await ui.change('#subject', 'Otros');
+    ui.query('#notes').value = 'Reunión interna';
+    ui.query('#notes').dispatchEvent(new ui.window.Event('input'));
+    await ui.change('#subject', 'Visita comercial');
+    assert.equal(ui.query('#client').value, 'Cliente nuevo de prueba');
+    assert.equal(ui.query('#phone').value, '3001234567');
+    assert.equal(ui.query('#property').value, 'Dirección de prueba');
+    assert.equal(ui.query('#captureSource').value, 'WhatsApp');
+    assert.equal(ui.query('#status').value, 'completed');
+    assert.equal(ui.query('#status').disabled, false);
+    assert.equal(ui.query('#client').required, true);
+    assert.equal(ui.query('#captureSource').required, true);
+    assert.equal(ui.query('#notes').required, false);
+    assert.equal(ui.query('#simiPropertyPicker').hidden, false);
+    for (const field of ui.window.document.querySelectorAll('[data-appointment-standard]')) assert.equal(field.hidden, false);
+    await ui.change('#subject', 'Otros');
+    await ui.window.saveAppointment({ preventDefault() {} });
+    const payload = ui.saved[0].payload;
+    assert.equal(payload.client, '');
+    assert.equal(payload.phone, '');
+    assert.equal(payload.property, '');
+    assert.equal(payload.capture_source, null);
+    assert.equal(payload.status, 'pending', 'el resultado del borrador comercial no pasa a la reserva');
+    await ui.click('#newAppointment');
+    assert.equal(ui.query('#notes').required, false);
+    assert.equal(ui.query('#notes').validationMessage, '');
+    assert.equal(ui.query('#client').required, true);
+    assert.equal(ui.query('#client').disabled, false);
+    assert.equal(ui.query('#notes').placeholder, 'Indicaciones relevantes para la cita');
+  } finally { ui.dom.window.close(); }
+});
+
+test('pasar una cita existente a Otros no borra sus datos previos ni cambia su resultado', async () => {
+  const appointment = { ...oldAppointment, status: 'rented', phone: '3001234567', property: 'Dirección histórica',
+    capture_source: 'Facebook', simi_property_code: '459-7337',
+    simi_property_url: 'https://felixtrujillofalla.com/inmuebles/arriendo/detalle/459-7337' };
+  const ui = await workspace('admin', { advisors: appointmentAdvisors, appointments: [appointment] });
+  try {
+    ui.window.openAppointmentDialog(ui.window.mapAppointment(appointment));
+    await ui.change('#subject', 'Otros');
+    ui.query('#notes').value = 'Reserva interna';
+    ui.query('#notes').dispatchEvent(new ui.window.Event('input'));
+    await ui.window.saveAppointment({ preventDefault() {} });
+    const payload = ui.saved[0].payload;
+    assert.equal(payload.subject, 'Otros');
+    assert.equal(payload.status, 'rented');
+    assert.equal(payload.client, appointment.client);
+    assert.equal(payload.phone, appointment.phone);
+    assert.equal(payload.property, appointment.property);
+    assert.equal(payload.capture_source, appointment.capture_source);
+    assert.equal('simi_property_code' in payload, false, 'no se borra el vínculo guardado');
+    await settle();
+    ui.window.openDetails(appointment.id);
+    assert.equal(ui.query('#whatsappAppointment').hidden, true);
+    assert.equal(ui.query('#detailContent').textContent.includes('Dirección histórica'), false);
+  } finally { ui.dom.window.close(); }
+});
+
+test('otros asuntos vuelven a exigir cliente y no obligan a escribir Notas', async () => {
+  const ui = await workspace('admin', { advisors: appointmentAdvisors });
+  try {
+    await fillOtherAppointment(ui, '');
+    await ui.change('#subject', 'Recepción Propietario');
+    assert.equal(ui.query('#notes').required, false);
+    assert.equal(ui.query('#notes').validationMessage, '');
+    assert.equal(ui.query('#appointmentForm').checkValidity(), false);
+    await ui.window.saveAppointment({ preventDefault() {} });
+    assert.equal(ui.saved.length, 0);
+    assert.ok(ui.query('#toast').textContent.includes('nombre del cliente'));
+    ui.query('#client').value = 'Cliente';
+    assert.equal(ui.query('#appointmentForm').checkValidity(), true);
+  } finally { ui.dom.window.close(); }
+});
+
+test('Otros conserva las asignaciones y restricciones existentes para cada rol', async () => {
+  for (const [role, manager] of [['admin', false], ['supervisor', false], ['advisor', true], ['advisor', false]]) {
+    const ui = await workspace(role, { profile: { can_manage_team_appointments: manager },
+      advisors: [{ ...appointmentAdvisors[0], id: 'user' }] });
+    try {
+      await ui.click('#newAppointment');
+      await ui.change('#subject', 'Otros');
+      if (role !== 'advisor') await ui.change('#team', 'sales');
+      if (role !== 'advisor' || manager) await ui.change('#advisor', 'user');
+      ui.query('#notes').value = 'Actividad del asesor';
+      ui.query('#notes').dispatchEvent(new ui.window.Event('input'));
+      assert.equal(ui.query('#team').disabled, role === 'advisor');
+      assert.equal(ui.query('#advisor').disabled, role === 'advisor' && !manager);
+      await ui.window.saveAppointment({ preventDefault() {} });
+      assert.equal(ui.saved.length, 1, `${role} / ${manager}`);
+      assert.equal(ui.saved[0].payload.advisor_id, 'user');
+      assert.equal(ui.saved[0].payload.status, 'pending');
+      await ui.change('#subject', 'Recepción Propietario');
+      assert.equal(ui.query('#status').disabled, role === 'advisor' && !manager);
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('Otros sin migración muestra el script nuevo y conserva Notas para reintentar', async () => {
+  const ui = await workspace('admin', { advisors: appointmentAdvisors,
+    saveError: { code: '23514', message: 'new row violates check constraint "appointments_client_check"' } });
+  try {
+    await fillOtherAppointment(ui);
+    await ui.window.saveAppointment({ preventDefault() {} });
+    assert.equal(ui.query('#appointmentDialog').open, true);
+    assert.equal(ui.query('#notes').value, 'Capacitación del equipo');
+    assert.equal(ui.query('#saveAppointment').disabled, false);
+    assert.equal(ui.query('#client').disabled, true);
+    assert.ok(ui.query('#toast').textContent.includes('add-other-appointment-subject.sql'));
+  } finally { ui.dom.window.close(); }
+});
+
+test('una búsqueda comercial pendiente no reaparece ni consulta SIMI al pasar a Otros', async () => {
+  const ui = await workspace('admin', { advisors: appointmentAdvisors });
+  try {
+    let finish;
+    ui.setPropertyResponse(() => new Promise(resolve => { finish = resolve; }));
+    await fillNewAppointment(ui, 'Visita comercial');
+    ui.query('#simiPropertyQuery').value = '7337';
+    await ui.click('#simiSearchButton');
+    assert.equal(ui.propertyCalls.length, 1);
+    await ui.change('#subject', 'Otros');
+    finish({ data: { properties: [{ code: '459-7337', title: 'Resultado anterior',
+      url: 'https://felixtrujillofalla.com/inmuebles/arriendo/detalle/459-7337' }] }, error: null });
+    await settle();
+    assert.equal(ui.query('#simiPropertyPicker').hidden, true);
+    assert.equal(ui.query('#simiPropertyResults').children.length, 0);
+    await ui.click('#simiSearchButton');
+    await ui.click('#simiProbeButton');
+    await ui.click('#simiSyncButton');
+    assert.equal(ui.propertyCalls.length, 1);
+    assert.equal(ui.functionCalls.length, 0);
   } finally { ui.dom.window.close(); }
 });

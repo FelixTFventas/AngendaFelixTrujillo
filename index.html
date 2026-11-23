@@ -570,15 +570,16 @@
             <option value="Devolución por el arrendatario">Devolución por el arrendatario</option>
             <option value="Entrega al arrendatario">Entrega al arrendatario</option>
             <option value="Devolución al propietario">Devolución al propietario</option>
+            <option value="Otros">Otros</option>
           </select>
         </div>
         <div class="field"><label for="date">Día</label><input id="date" name="date" type="date" required value="2026-07-23"></div>
         <div class="field"><label for="time">Hora</label><input id="time" name="time" type="time" required value="10:00"></div>
-        <div class="field"><label for="client">Nombre del cliente</label><input id="client" name="client" required autocomplete="name" placeholder="Nombre completo"></div>
-        <div class="field"><label for="phone">Teléfono</label><input id="phone" name="phone" type="tel" autocomplete="tel" placeholder="Ej. +57 300 000 0000"></div>
+        <div class="field" data-appointment-standard><label for="client">Nombre del cliente</label><input id="client" name="client" required autocomplete="name" placeholder="Nombre completo"></div>
+        <div class="field" data-appointment-standard><label for="phone">Teléfono</label><input id="phone" name="phone" type="tel" autocomplete="tel" placeholder="Ej. +57 300 000 0000"></div>
         <div class="field"><label for="team">Equipo</label><select id="team" name="team" required><option value="">Selecciona un equipo</option><option value="rental">Arrendamientos</option><option value="sales">Ventas</option></select></div>
         <div class="field"><label for="advisor">Asesor responsable</label><select id="advisor" name="advisor" required disabled><option value="">Selecciona primero un equipo</option></select></div>
-        <div class="field full">
+        <div class="field full" data-appointment-standard>
           <label for="property">Inmueble o dirección</label>
           <div class="simi-picker" id="simiPropertyPicker" hidden>
             <label for="simiPropertyQuery">Buscar inmueble para visita comercial</label>
@@ -605,7 +606,7 @@
           </div>
           <input id="property" name="property" placeholder="Ej. Apartamento 804 · Torres del Parque">
         </div>
-        <div class="field full">
+        <div class="field full" data-appointment-standard>
           <label for="captureSource">Captado</label>
           <select id="captureSource" name="captureSource" aria-describedby="captureSourceHint">
             <option value="" selected>Selecciona el medio (opcional)</option>
@@ -619,8 +620,8 @@
           </select>
           <span class="field-hint" id="captureSourceHint">Obligatorio solo para “Visita comercial”.</span>
         </div>
-        <div class="field"><label for="status">Estado</label><select id="status" name="status" aria-describedby="appointmentStatusHint"><option value="" selected disabled hidden>Sin resultado todavía</option><option value="completed">Realizada</option><option value="rented">Arrendado</option><option value="cancelled">Cancelado</option></select><span class="field-hint" id="appointmentStatusHint">Actualiza el resultado cuando se conozca; una cita futura no se marca como realizada automáticamente.</span></div>
-        <div class="field full"><label for="notes">Notas</label><textarea id="notes" name="notes" placeholder="Indicaciones relevantes para la cita"></textarea></div>
+        <div class="field" data-appointment-standard><label for="status">Estado</label><select id="status" name="status" aria-describedby="appointmentStatusHint"><option value="" selected disabled hidden>Sin resultado todavía</option><option value="completed">Realizada</option><option value="rented">Arrendado</option><option value="cancelled">Cancelado</option></select><span class="field-hint" id="appointmentStatusHint">Actualiza el resultado cuando se conozca; una cita futura no se marca como realizada automáticamente.</span></div>
+        <div class="field full"><label for="notes" id="appointmentNotesLabel">Notas</label><textarea id="notes" name="notes" placeholder="Indicaciones relevantes para la cita"></textarea></div>
       </div>
       <div class="form-actions"><button class="ghost close-secondary" type="button">Cancelar</button><button class="primary" id="saveAppointment" type="submit">Guardar cita</button></div>
     </form>
